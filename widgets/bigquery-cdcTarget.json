@@ -1,0 +1,53 @@
+{
+  "metadata": {
+    "spec-version": "1.5"
+  },
+  "display-name": "BigQuery",
+  "configuration-groups": [
+    {
+      "label": "Basic",
+      "properties": [
+        {
+          "name": "project",
+          "label": "Project ID",
+          "widget-type": "textbox"
+        },
+        {
+          "name": "serviceAccountKey",
+          "label": "Service Account Key",
+          "widget-type": "textarea"
+        },
+        {
+          "name": "stagingBucket",
+          "label": "Staging Bucket Name",
+          "widget-type": "textbox"
+        }
+      ]
+    },
+    {
+      "label" : "CDC Configuration",
+      "properties" : [
+        {
+          "name": "maxBatchSeconds",
+          "label": "Max Batch Seconds",
+          "widget-type": "textbox",
+          "widget-attributes": {
+            "default": "30"
+          }
+        },
+        {
+          "name": "maxBatchChanges",
+          "label": "Max Batch Changes",
+          "widget-type": "textbox"
+        },
+        {
+          "name": "stagingTablePrefix",
+          "label": "Staging Table Prefix",
+          "widget-type": "textbox"
+        }
+      ]
+    }
+  ],
+  "outputs": []
+}
+

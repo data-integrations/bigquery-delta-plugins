@@ -70,9 +70,6 @@ page at http://checkstyle.sourceforge.net/config.html -->
   <!-- All Java AST specific tests live under TreeWalker module. -->
   <module name="TreeWalker">
 
-    <!-- required for SupressionCommentFilter and SuppressWithNearbyCommentFilter -->
-    <module name="FileContentsHolder"/>
-
     <!--
 
     IMPORT CHECKS
@@ -93,6 +90,7 @@ page at http://checkstyle.sourceforge.net/config.html -->
       <!-- Checks for out of order import statements. -->
       <property name="severity" value="error"/>
       <property name="ordered" value="true"/>
+      <property name="separated" value="true"/>
       <property name="groups" value="/([^j]|.[^a]|..[^v]|...[^a])/,/^javax?\./"/>
       <!-- This ensures that static imports go to the end. -->
       <property name="option" value="bottom"/>
@@ -384,6 +382,13 @@ page at http://checkstyle.sourceforge.net/config.html -->
       <property name="severity" value="error"/>
     </module>
 
+    <module name="SuppressionCommentFilter">
+      <property name="offCommentFormat" value="CHECKSTYLE OFF: (.+)" />
+      <property name="onCommentFormat" value="CHECKSTYLE ON" />
+      <property name="checkFormat" value="Javadoc.*"/>
+      <property name="messageFormat" value="$1"/>
+    </module>
+
   </module>
 
   <!--
@@ -393,13 +398,6 @@ page at http://checkstyle.sourceforge.net/config.html -->
   <module name="SuppressionFilter">
     <property name="file" value="suppressions.xml"/>
     <property name="optional" value="true"/>
-  </module>
-
-  <module name="SuppressionCommentFilter">
-    <property name="offCommentFormat" value="CHECKSTYLE OFF: (.+)" />
-    <property name="onCommentFormat" value="CHECKSTYLE ON" />
-    <property name="checkFormat" value="Javadoc.*"/>
-    <property name="messageFormat" value="$1"/>
   </module>
 
 </module>
