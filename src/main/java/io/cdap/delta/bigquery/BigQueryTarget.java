@@ -35,6 +35,9 @@ import io.cdap.delta.api.Configurer;
 import io.cdap.delta.api.DeltaTarget;
 import io.cdap.delta.api.DeltaTargetContext;
 import io.cdap.delta.api.EventConsumer;
+import io.cdap.delta.api.assessment.StandardizedTableDetail;
+import io.cdap.delta.api.assessment.TableAssessment;
+import io.cdap.delta.api.assessment.TableAssessor;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -93,6 +96,11 @@ public class BigQueryTarget implements DeltaTarget {
 
     return new BigQueryEventConsumer(context, storage, bigQuery, bucket, project,
                                      conf.getMaxBatchChanges(), conf.getMaxBatchSeconds());
+  }
+
+  @Override
+  public TableAssessor<StandardizedTableDetail> createTableAssessor(Configurer configurer) {
+    return tableDetail -> new TableAssessment(Collections.emptyList());
   }
 
   /**
