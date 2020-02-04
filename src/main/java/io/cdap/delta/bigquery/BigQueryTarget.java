@@ -36,7 +36,6 @@ import io.cdap.delta.api.DeltaTarget;
 import io.cdap.delta.api.DeltaTargetContext;
 import io.cdap.delta.api.EventConsumer;
 import io.cdap.delta.api.assessment.StandardizedTableDetail;
-import io.cdap.delta.api.assessment.TableAssessment;
 import io.cdap.delta.api.assessment.TableAssessor;
 
 import java.io.ByteArrayInputStream;
@@ -49,12 +48,14 @@ import javax.annotation.Nullable;
 /**
  * A BigQuery CDC Target
  */
+@SuppressWarnings("unused")
 @Name(BigQueryTarget.NAME)
 @Plugin(type = DeltaTarget.PLUGIN_TYPE)
 public class BigQueryTarget implements DeltaTarget {
   public static final String NAME = "bigquery";
   private final Conf conf;
 
+  @SuppressWarnings("unused")
   public BigQueryTarget(Conf conf) {
     this.conf = conf;
   }
@@ -100,12 +101,13 @@ public class BigQueryTarget implements DeltaTarget {
 
   @Override
   public TableAssessor<StandardizedTableDetail> createTableAssessor(Configurer configurer) {
-    return tableDetail -> new TableAssessment(Collections.emptyList());
+    return new BigQueryAssessor();
   }
 
   /**
    * Config for BigQuery target.
    */
+  @SuppressWarnings("unused")
   public static class Conf extends PluginConfig {
 
     @Nullable
@@ -143,13 +145,11 @@ public class BigQueryTarget implements DeltaTarget {
       return stagingTablePrefix == null || stagingTablePrefix.isEmpty() ? "_staging_" : stagingTablePrefix;
     }
 
-    @Nullable
-    public int getMaxBatchSeconds() {
+    int getMaxBatchSeconds() {
       return maxBatchSeconds == null ? 60 : maxBatchSeconds;
     }
 
-    @Nullable
-    public int getMaxBatchChanges() {
+    int getMaxBatchChanges() {
       return maxBatchChanges == null ? 1000 * 1000 : maxBatchChanges;
     }
 
