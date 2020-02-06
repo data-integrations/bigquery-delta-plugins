@@ -19,11 +19,15 @@ package io.cdap.delta.bigquery;
 import com.google.cloud.bigquery.StandardSQLTypeName;
 import io.cdap.cdap.api.data.schema.Schema;
 import io.cdap.delta.api.assessment.ColumnAssessment;
+import io.cdap.delta.api.assessment.ColumnSuggestion;
+import io.cdap.delta.api.assessment.ColumnSupport;
+import io.cdap.delta.api.assessment.Problem;
 import io.cdap.delta.api.assessment.StandardizedTableDetail;
 import io.cdap.delta.api.assessment.TableAssessment;
 import io.cdap.delta.api.assessment.TableAssessor;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -35,9 +39,25 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
   public TableAssessment assess(StandardizedTableDetail tableDetail) {
     List<ColumnAssessment> columnAssessments = new ArrayList<>();
     for (Schema.Field field : tableDetail.getSchema().getFields()) {
-      columnAssessments.add(new ColumnAssessment(field.getName(), toBigQueryType(field).toLowerCase()));
+      try {
+        String bqType = toBigQueryType(field);
+        columnAssessments.add(ColumnAssessment.builder(field.getName(), bqType)
+                                .setSourceColumn(field.getName())
+                                .build());
+      } catch (IllegalArgumentException e) {
+        columnAssessments.add(ColumnAssessment.builder(field.getName(), "N/A")
+                                .setSourceColumn(field.getName())
+                                .setSupport(ColumnSupport.NO)
+                                .setSuggestion(new ColumnSuggestion(e.getMessage(), Collections.emptyList()))
+                                .build());
+      }
     }
-    return new TableAssessment(columnAssessments);
+    List<Problem> problems = new ArrayList<>();
+    if (tableDetail.getPrimaryKey().isEmpty()) {
+      problems.add(new Problem("Missing Primary Key", "Tables must have a primary key in order to be replicated.",
+                               "Please alter the table to use a primary key, or select a different table", ""));
+    }
+    return new TableAssessment(columnAssessments, problems);
   }
 
   private String toBigQueryType(Schema.Field field) {
