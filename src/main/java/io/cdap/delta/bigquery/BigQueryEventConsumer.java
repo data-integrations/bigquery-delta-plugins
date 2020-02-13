@@ -17,7 +17,6 @@
 package io.cdap.delta.bigquery;
 
 import com.google.cloud.bigquery.BigQuery;
-import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.DatasetId;
 import com.google.cloud.bigquery.DatasetInfo;
 import com.google.cloud.bigquery.FormatOptions;
@@ -34,20 +33,31 @@ import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.Bucket;
 import com.google.cloud.storage.Storage;
+import com.google.common.annotations.VisibleForTesting;
 import io.cdap.cdap.api.data.schema.Schema;
 import io.cdap.delta.api.DDLEvent;
 import io.cdap.delta.api.DMLEvent;
 import io.cdap.delta.api.DMLOperation;
+import io.cdap.delta.api.DeltaFailureException;
 import io.cdap.delta.api.DeltaTargetContext;
 import io.cdap.delta.api.EventConsumer;
 import io.cdap.delta.api.Offset;
+import io.cdap.delta.api.ReplicationError;
 import io.cdap.delta.api.Sequenced;
+import net.jodah.failsafe.Failsafe;
+import net.jodah.failsafe.FailsafeException;
+import net.jodah.failsafe.RetryPolicy;
+import net.jodah.failsafe.TimeoutExceededException;
+import net.jodah.failsafe.function.ContextualRunnable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.time.Duration;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -150,11 +160,14 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final MultiGCSWriter gcsWriter;
   private final Bucket bucket;
   private final String project;
+  private final RetryPolicy<Object> commitRetryPolicy;
   private ScheduledExecutorService executorService;
   private ScheduledFuture<?> scheduledFlush;
   private Offset latestOffset;
+  private long lastFlushTime;
   private long latestSequenceNum;
   private int currentBatchSize;
+  private Exception flushException;
   // have to keep all the records in memory in case there is a failure writing to GCS
   // cannot write to a temporary file on local disk either in case there is a failure writing to disk
   // Without keeping the entire batch in memory, there would be no way to recover the records that failed to write
@@ -166,12 +179,25 @@ public class BigQueryEventConsumer implements EventConsumer {
     this.batchMaxRows = batchMaxRows;
     this.batchMaxSecondsElapsed = batchMaxSecondsElapsed;
     this.gcsWriter = new MultiGCSWriter(storage, bucket.getName(),
-                                        String.format("cdap/delta/%s/", context.getApplicationName()));
+                                        String.format("cdap/delta/%s/", context.getApplicationName()),
+                                        context);
     this.bucket = bucket;
     this.project = project;
     this.currentBatchSize = 0;
     this.executorService = Executors.newSingleThreadScheduledExecutor();
     this.latestSequenceNum = 0L;
+    this.lastFlushTime = 0L;
+    this.commitRetryPolicy = new RetryPolicy<>()
+      .withMaxAttempts(Integer.MAX_VALUE)
+      .withMaxDuration(Duration.of(5, ChronoUnit.MINUTES))
+      .withBackoff(1, 60, ChronoUnit.SECONDS)
+      .onFailedAttempt(failureContext -> {
+        // log on the first failure and then once per minute
+        if (failureContext.getAttemptCount() == 1 || !failureContext.getElapsedTime().minusMinutes(1).isNegative()) {
+          LOG.warn("Error committing offset. Changes will be blocked until this succeeds.",
+                   failureContext.getLastFailure());
+        }
+      });
   }
 
   @Override
@@ -181,6 +207,8 @@ public class BigQueryEventConsumer implements EventConsumer {
         flush();
       } catch (InterruptedException e) {
         // just return and let things end
+      } catch (Exception e) {
+        flushException = e;
       }
     }, batchMaxSecondsElapsed, batchMaxSecondsElapsed, TimeUnit.SECONDS);
   }
@@ -196,9 +224,13 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
   }
 
-  // TODO: handle errors
   @Override
-  public void applyDDL(Sequenced<DDLEvent> sequencedEvent) throws IOException {
+  public synchronized void applyDDL(Sequenced<DDLEvent> sequencedEvent) throws Exception {
+    // this is non-null if an error happened during a time scheduled flush
+    if (flushException != null) {
+      throw flushException;
+    }
+
     DDLEvent event = sequencedEvent.getEvent();
     switch (event.getOperation()) {
       case CREATE_DATABASE:
@@ -262,7 +294,13 @@ public class BigQueryEventConsumer implements EventConsumer {
         // TODO: run a DELETE from table WHERE 1=1 query
         break;
     }
-    context.commitOffset(event.getOffset(), sequencedEvent.getSequenceNumber());
+    latestOffset = event.getOffset();
+    latestSequenceNum = sequencedEvent.getSequenceNumber();
+    if (event.isSnapshot()) {
+      context.setTableSnapshotting(event.getDatabase(), event.getTable());
+    } else {
+      context.setTableReplicating(event.getDatabase(), event.getTable());
+    }
   }
 
   private Schema addSequenceNumber(Schema original) {
@@ -272,167 +310,245 @@ public class BigQueryEventConsumer implements EventConsumer {
     return Schema.recordOf(original.getRecordName() + ".sequenced", fields);
   }
 
+  private void commitOffset() throws DeltaFailureException {
+    try {
+      Failsafe.with(commitRetryPolicy).run(() -> {
+        if (latestOffset != null) {
+          context.commitOffset(latestOffset, latestSequenceNum);
+        }
+      });
+    } catch (Exception e) {
+      throw new DeltaFailureException(e.getMessage(), e);
+    }
+  }
+
   @Override
-  public void applyDML(Sequenced<DMLEvent> sequencedEvent) {
+  public synchronized void applyDML(Sequenced<DMLEvent> sequencedEvent) throws Exception {
+    // this is non-null if an error happened during a time scheduled flush
+    if (flushException != null) {
+      throw flushException;
+    }
+
+    DMLEvent event = sequencedEvent.getEvent();
     gcsWriter.write(sequencedEvent);
-    latestOffset = sequencedEvent.getEvent().getOffset();
+    latestOffset = event.getOffset();
     latestSequenceNum = sequencedEvent.getSequenceNumber();
     currentBatchSize++;
     if (currentBatchSize >= batchMaxRows) {
-      try {
-        flush();
-      } catch (InterruptedException e) {
-        return;
-      }
+      flush();
+    }
+
+    if (event.isSnapshot()) {
+      context.setTableSnapshotting(event.getDatabase(), event.getTable());
+    } else {
+      context.setTableReplicating(event.getDatabase(), event.getTable());
     }
   }
 
-  // TODO: do this in parallel and asynchronously
-  private synchronized void flush() throws InterruptedException {
-    for (TableBlob blob : gcsWriter.flush()) {
-      // [app name]_stage_[batch id]_[retry num].
-      TableId stagingTableId = TableId.of(project, blob.getDataset(), "_staging_" + blob.getTable());
-      Table stagingTable = bigQuery.getTable(stagingTableId);
-      if (stagingTable == null) {
-        TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
-          .setLocation(bucket.getLocation())
-          .setSchema(Schemas.convert(blob.getStagingSchema()))
-          .build();
-        TableInfo tableInfo = TableInfo.newBuilder(stagingTableId, tableDefinition).build();
-        try {
-          stagingTable = bigQuery.create(tableInfo);
-        } catch (BigQueryException e) {
-          // TODO: handler error
-          LOG.error("Failed to create staging table {}", blob.getTable(), e);
-          return;
-        }
-      }
-      // TODO: verify schema of staging table
-
-      // load data from GCS object into staging BQ table
-      JobId jobId = JobId.newBuilder()
-        .setLocation(bucket.getLocation())
-        .setJob(String.format("%s_stage_%s_%s", context.getApplicationName(), blob.getTable(), blob.getBatchId()))
-        .build();
-      BlobId blobId = blob.getBlob().getBlobId();
-      String uri = String.format("gs://%s/%s", blobId.getBucket(), blobId.getName());
-      LoadJobConfiguration loadJobConf = LoadJobConfiguration.newBuilder(stagingTableId, uri)
-        .setFormatOptions(FormatOptions.avro())
-        .build();
-      JobInfo jobInfo = JobInfo.newBuilder(loadJobConf)
-        .setJobId(jobId)
-        .build();
-      try {
-        // TODO: handle failures
-        Job loadJob = bigQuery.create(jobInfo);
-        loadJob.waitFor();
-      } catch (BigQueryException e) {
-        LOG.error("Failed to load data into BigQuery.", e);
-        return;
-      }
-
-      // merge data from staging BQ table into target table
-      TableId targetTableId = TableId.of(project, blob.getDataset(), blob.getTable());
-      Table targetTable = bigQuery.getTable(targetTableId);
-      if (targetTable == null) {
-        TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
-          .setLocation(bucket.getLocation())
-          .setSchema(Schemas.convert(blob.getTargetSchema()))
-          .build();
-        TableInfo tableInfo = TableInfo.newBuilder(stagingTableId, tableDefinition).build();
-        try {
-          targetTable = bigQuery.create(tableInfo);
-        } catch (BigQueryException e) {
-          // TODO: handler error
-          LOG.error("Failed to create target table {}", blob.getTable(), e);
-          return;
-        }
-      }
-
-      // TODO: figure app should provide a way to get table info given an offset
-      String pkStr = targetTable.getDescription();
-      pkStr = pkStr == null || !pkStr.startsWith("Primary Key: ") ?
-        "_sequence_num" : pkStr.substring("Primary Key: ".length());
-      List<String> primaryKey = Arrays.stream(pkStr.split(",")).collect(Collectors.toList());
-      // TODO: verify schema of target table
-      /*
-       * SELECT S.* FROM
-       *   (SELECT * FROM [dataset].[staging table] WHERE _batchId = [batch id]) as S
-       *   JOIN (
-       *     SELECT [primary key], MAX(_sequence_num) as maxSequenceNum
-       *     FROM [dataset].[staging table]
-       *     WHERE _batchId = [batch id]) as M
-       *   ON [primary key equality] AND S._sequence_num = M.maxSequenceNum
-       */
-      String diffQuery = String.format(
-        "SELECT S.* FROM "
-          + "(SELECT * FROM %s.%s WHERE _batch_id = \"%s\") as S "
-          + "JOIN ("
-          + " SELECT %s, MAX(_sequence_num) as maxSequenceNum "
-          + " FROM %s.%s "
-          + " WHERE _batch_id = \"%s\" "
-          + " GROUP BY %s) as M "
-          + "ON %s AND S._sequence_num = M.maxSequenceNum",
-        stagingTableId.getDataset(), stagingTableId.getTable(), blob.getBatchId(),
-        pkStr,
-        stagingTableId.getDataset(), stagingTableId.getTable(),
-        blob.getBatchId(),
-        pkStr,
-        primaryKey.stream().map(k -> String.format("S.%s = M.%s", k, k)).collect(Collectors.joining(" AND ")));
-
-      // D.column1 = T.column1 AND D.column2 = T.column2 ...
-      String equalityStr = primaryKey.stream()
-        .map(name -> String.format("D.%s = T.%s", name, name))
-        .collect(Collectors.joining(" AND "));
-      // column1 = S.column1, column2 = S.column2, ...
-      String updateStr = blob.getTargetSchema().getFields().stream()
-        .map(Schema.Field::getName)
-        .map(name -> String.format("%s = D.%s", name, name))
-        .collect(Collectors.joining(", "));
-      String columns = blob.getTargetSchema().getFields().stream()
-        .map(Schema.Field::getName)
-        .collect(Collectors.joining(", "));
-      String query = String.format(
-        "MERGE %s.%s as T "
-          + "USING (%s) as D ON %s AND D._sequence_num > T._sequence_num "
-          + "WHEN MATCHED AND D._op = \"%s\" THEN DELETE "
-          + "WHEN MATCHED AND D._op IN (\"%s\", \"%s\") THEN UPDATE SET %s "
-          + "WHEN NOT MATCHED AND D._op IN (\"%s\", \"%s\") THEN INSERT (%s) VALUES (%s)",
-        targetTableId.getDataset(), targetTableId.getTable(),
-        diffQuery, equalityStr,
-        DMLOperation.DELETE.name(),
-        DMLOperation.INSERT.name(), DMLOperation.UPDATE.name(), updateStr,
-        DMLOperation.INSERT.name(), DMLOperation.UPDATE.name(), columns, columns);
-      QueryJobConfiguration mergeJobConf = QueryJobConfiguration.newBuilder(query).build();
-      // TODO: make job ids unique -- right now they are not unique in failure conditions
-      jobId = JobId.newBuilder()
-        .setLocation(bucket.getLocation())
-        .setJob(String.format("%s_merge_%s_%s", context.getApplicationName(), blob.getTable(), blob.getBatchId()))
-        .build();
-      jobInfo = JobInfo.newBuilder(mergeJobConf)
-        .setJobId(jobId)
-        .build();
-      try {
-        Job mergeJob = bigQuery.create(jobInfo);
-        // TODO: handle failures
-        mergeJob.waitFor();
-      } catch (BigQueryException e) {
-        LOG.error("Failed to run merge query", e);
-        return;
-      }
-
-      blob.getBlob().delete();
+  @VisibleForTesting
+  synchronized void flush() throws InterruptedException, IOException, DeltaFailureException {
+    long now = System.currentTimeMillis();
+    // if there was a flush that recently happened because the max number of events per batch was reached,
+    // then skip the time based flush.
+    if (now - lastFlushTime < TimeUnit.SECONDS.toMillis(batchMaxSecondsElapsed)) {
+      return;
     }
-    currentBatchSize = 0;
+    lastFlushTime = now;
+
+    Collection<TableBlob> tableBlobs;
+    // if this throws an IOException, we want to propagate it, since we need the app to reset state to the last
+    // commit and replay events. This is because previous events are written directly to an outputstream to GCS
+    // and then dropped, so we cannot simply retry the flush here.
     try {
-      if (latestOffset != null) {
-        context.commitOffset(latestOffset, latestSequenceNum);
-      }
+      tableBlobs = gcsWriter.flush();
     } catch (IOException e) {
-      // TODO: retry failures
-      LOG.error("Failed to commit offset", e);
+      flushException = e;
+      throw e;
+    }
+
+    // TODO: do this in parallel and asynchronously
+    for (TableBlob blob : tableBlobs) {
+      mergeTableChanges(blob);
+    }
+
+    currentBatchSize = 0;
+    commitOffset();
+  }
+
+  private void mergeTableChanges(TableBlob blob) throws DeltaFailureException, InterruptedException {
+    TableId stagingTableId = TableId.of(project, blob.getDataset(), "_staging_" + blob.getTable());
+
+    runWithRetries(runContext -> loadStagingTable(stagingTableId, blob, runContext.getAttemptCount()),
+                   blob,
+                   String.format("Failed to load a batch of changes from GCS into staging table for %s.%s",
+                                 blob.getDataset(), blob.getTable()),
+                   "Exhausted retries while attempting to load changed to the staging table.");
+
+    runWithRetries(runContext -> mergeStagingTable(stagingTableId, blob, runContext.getAttemptCount()),
+                   blob,
+                   String.format("Failed to merge a batch of changes from the staging table into %s.%s",
+                                 blob.getDataset(), blob.getTable()),
+                   String.format("Exhausted retries while attempting to merge changes into target table %s.%s. "
+                                   + "Check that the service account has the right permissions "
+                                   + "and the table was not modified.", blob.getDataset(), blob.getTable()));
+
+    try {
+      blob.getBlob().delete();
+    } catch (Exception e) {
+      // there is no retry for this cleanup error since it will not affect future functionality.
+      LOG.warn("Failed to delete temporary GCS object {} in bucket {}. The object will need to be manually deleted.",
+               blob.getBlob().getBlobId().getName(), blob.getBlob().getBlobId().getBucket(), e);
     }
   }
 
+  private void loadStagingTable(TableId stagingTableId, TableBlob blob, int attemptNumber) throws InterruptedException {
+    Table stagingTable = bigQuery.getTable(stagingTableId);
+    if (stagingTable == null) {
+      TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
+        .setLocation(bucket.getLocation())
+        .setSchema(Schemas.convert(blob.getStagingSchema()))
+        .build();
+      TableInfo tableInfo = TableInfo.newBuilder(stagingTableId, tableDefinition).build();
+      bigQuery.create(tableInfo);
+    }
+    // TODO: verify schema of staging table
 
+    // load data from GCS object into staging BQ table
+    // batch id is a timestamp generated at the time the first event was seen, so the job id is
+    // guaranteed to be different from the previous batch for the table
+    JobId jobId = JobId.newBuilder()
+      .setLocation(bucket.getLocation())
+      .setJob(String.format("%s_stage_%s_%s_%d_%d", context.getApplicationName(), blob.getDataset(),
+                            blob.getTable(), blob.getBatchId(), attemptNumber))
+      .build();
+    BlobId blobId = blob.getBlob().getBlobId();
+    String uri = String.format("gs://%s/%s", blobId.getBucket(), blobId.getName());
+    LoadJobConfiguration loadJobConf = LoadJobConfiguration.newBuilder(stagingTableId, uri)
+      .setFormatOptions(FormatOptions.avro())
+      .build();
+    JobInfo jobInfo = JobInfo.newBuilder(loadJobConf)
+      .setJobId(jobId)
+      .build();
+    Job loadJob = bigQuery.create(jobInfo);
+    loadJob.waitFor();
+  }
+
+  private void mergeStagingTable(TableId stagingTableId, TableBlob blob,
+                                 int attemptNumber) throws InterruptedException {
+    // merge data from staging BQ table into target table
+    TableId targetTableId = TableId.of(project, blob.getDataset(), blob.getTable());
+    Table targetTable = bigQuery.getTable(targetTableId);
+    if (targetTable == null) {
+      TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
+        .setLocation(bucket.getLocation())
+        .setSchema(Schemas.convert(blob.getTargetSchema()))
+        .build();
+      TableInfo tableInfo = TableInfo.newBuilder(targetTableId, tableDefinition).build();
+      targetTable = bigQuery.create(tableInfo);
+    }
+
+    // TODO: figure app should provide a way to get table info given an offset
+    String pkStr = targetTable.getDescription();
+    pkStr = pkStr == null || !pkStr.startsWith("Primary Key: ") ?
+      "_sequence_num" : pkStr.substring("Primary Key: ".length());
+    List<String> primaryKey = Arrays.stream(pkStr.split(",")).collect(Collectors.toList());
+    // TODO: verify schema of target table
+    /*
+     * SELECT S.* FROM
+     *   (SELECT * FROM [dataset].[staging table] WHERE _batchId = [batch id]) as S
+     *   JOIN (
+     *     SELECT [primary key], MAX(_sequence_num) as maxSequenceNum
+     *     FROM [dataset].[staging table]
+     *     WHERE _batchId = [batch id]
+     *     GROUP BY [primary key]) as M
+     *   ON [primary key equality] AND S._sequence_num = M.maxSequenceNum
+     */
+    String diffQuery = String.format(
+      "SELECT S.* FROM "
+        + "(SELECT * FROM %s.%s WHERE _batch_id = %d) as S "
+        + "JOIN ("
+        + " SELECT %s, MAX(_sequence_num) as maxSequenceNum "
+        + " FROM %s.%s "
+        + " WHERE _batch_id = %d "
+        + " GROUP BY %s) as M "
+        + "ON %s AND S._sequence_num = M.maxSequenceNum",
+      stagingTableId.getDataset(), stagingTableId.getTable(), blob.getBatchId(),
+      pkStr,
+      stagingTableId.getDataset(), stagingTableId.getTable(),
+      blob.getBatchId(),
+      pkStr,
+      primaryKey.stream().map(k -> String.format("S.%s = M.%s", k, k)).collect(Collectors.joining(" AND ")));
+
+    // D.column1 = T.column1 AND D.column2 = T.column2 ...
+    String equalityStr = primaryKey.stream()
+      .map(name -> String.format("D.%s = T.%s", name, name))
+      .collect(Collectors.joining(" AND "));
+    // column1 = S.column1, column2 = S.column2, ...
+    String updateStr = blob.getTargetSchema().getFields().stream()
+      .map(Schema.Field::getName)
+      .map(name -> String.format("%s = D.%s", name, name))
+      .collect(Collectors.joining(", "));
+    String columns = blob.getTargetSchema().getFields().stream()
+      .map(Schema.Field::getName)
+      .collect(Collectors.joining(", "));
+    String query = String.format(
+      "MERGE %s.%s as T "
+        + "USING (%s) as D ON %s AND D._sequence_num > T._sequence_num "
+        + "WHEN MATCHED AND D._op = \"%s\" THEN DELETE "
+        + "WHEN MATCHED AND D._op IN (\"%s\", \"%s\") THEN UPDATE SET %s "
+        + "WHEN NOT MATCHED AND D._op IN (\"%s\", \"%s\") THEN INSERT (%s) VALUES (%s)",
+      targetTableId.getDataset(), targetTableId.getTable(),
+      diffQuery, equalityStr,
+      DMLOperation.DELETE.name(),
+      DMLOperation.INSERT.name(), DMLOperation.UPDATE.name(), updateStr,
+      DMLOperation.INSERT.name(), DMLOperation.UPDATE.name(), columns, columns);
+    QueryJobConfiguration mergeJobConf = QueryJobConfiguration.newBuilder(query).build();
+    // job id will be different even after a retry because batchid is the timestamp when the first
+    // event in the batch was seen
+    JobId jobId = JobId.newBuilder()
+      .setLocation(bucket.getLocation())
+      .setJob(String.format("%s_merge_%s_%s_%d_%d", context.getApplicationName(), blob.getDataset(), blob.getTable(),
+                            blob.getBatchId(), attemptNumber))
+      .build();
+    JobInfo jobInfo = JobInfo.newBuilder(mergeJobConf)
+      .setJobId(jobId)
+      .build();
+    Job mergeJob = bigQuery.create(jobInfo);
+    mergeJob.waitFor();
+  }
+
+  private void runWithRetries(ContextualRunnable runnable, TableBlob blob, String onFailedAttemptMessage,
+                              String retriesExhaustedMessage) throws DeltaFailureException, InterruptedException {
+    RetryPolicy<Object> retryPolicy = new RetryPolicy<>()
+      .withMaxDuration(Duration.of(context.getMaxRetrySeconds(), ChronoUnit.SECONDS))
+      // maxDuration must be greater than the delay, otherwise Failsafe complains
+      .withBackoff(Math.min(61, context.getMaxRetrySeconds()) - 1, 120, ChronoUnit.SECONDS)
+      .withMaxAttempts(Integer.MAX_VALUE)
+      .onFailedAttempt(failureContext -> {
+        Throwable t = failureContext.getLastFailure();
+        LOG.error(onFailedAttemptMessage, t);
+        // its ok to set table state every retry, because this is a no-op if there is no change to the state.
+        try {
+          context.setTableError(blob.getDataset(), blob.getTable(), new ReplicationError(t));
+        } catch (IOException e) {
+          // setting table state is not a fatal error, log a warning and continue on
+          LOG.warn("Unable to set error state for table {}.{}. Replication state for the table may be incorrect.",
+                   blob.getDataset(), blob.getTable());
+        }
+      });
+
+    try {
+      Failsafe.with(retryPolicy).run(runnable);
+    } catch (TimeoutExceededException e) {
+      // if the retry timeout was reached, throw a DeltaFailureException to fail the pipeline immediately
+      DeltaFailureException exc = new DeltaFailureException(retriesExhaustedMessage, e);
+      flushException = exc;
+      throw exc;
+    } catch (FailsafeException e) {
+      if (e.getCause() instanceof InterruptedException) {
+        throw (InterruptedException) e.getCause();
+      }
+      throw e;
+    }
+  }
 }
