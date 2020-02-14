@@ -153,6 +153,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private ScheduledExecutorService executorService;
   private ScheduledFuture<?> scheduledFlush;
   private Offset latestOffset;
+  private long latestSequenceNum;
   private int currentBatchSize;
   // have to keep all the records in memory in case there is a failure writing to GCS
   // cannot write to a temporary file on local disk either in case there is a failure writing to disk
@@ -170,6 +171,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     this.project = project;
     this.currentBatchSize = 0;
     this.executorService = Executors.newSingleThreadScheduledExecutor();
+    this.latestSequenceNum = 0L;
   }
 
   @Override
@@ -196,7 +198,7 @@ public class BigQueryEventConsumer implements EventConsumer {
 
   // TODO: handle errors
   @Override
-  public void applyDDL(Sequenced<DDLEvent> sequencedEvent) {
+  public void applyDDL(Sequenced<DDLEvent> sequencedEvent) throws IOException {
     DDLEvent event = sequencedEvent.getEvent();
     switch (event.getOperation()) {
       case CREATE_DATABASE:
@@ -260,7 +262,7 @@ public class BigQueryEventConsumer implements EventConsumer {
         // TODO: run a DELETE from table WHERE 1=1 query
         break;
     }
-
+    context.commitOffset(event.getOffset(), sequencedEvent.getSequenceNumber());
   }
 
   private Schema addSequenceNumber(Schema original) {
@@ -274,6 +276,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   public void applyDML(Sequenced<DMLEvent> sequencedEvent) {
     gcsWriter.write(sequencedEvent);
     latestOffset = sequencedEvent.getEvent().getOffset();
+    latestSequenceNum = sequencedEvent.getSequenceNumber();
     currentBatchSize++;
     if (currentBatchSize >= batchMaxRows) {
       try {
@@ -423,7 +426,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     currentBatchSize = 0;
     try {
       if (latestOffset != null) {
-        context.commitOffset(latestOffset);
+        context.commitOffset(latestOffset, latestSequenceNum);
       }
     } catch (IOException e) {
       // TODO: retry failures
