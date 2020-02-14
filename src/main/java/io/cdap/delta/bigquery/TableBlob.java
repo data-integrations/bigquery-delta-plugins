@@ -27,10 +27,10 @@ public class TableBlob {
   private final String table;
   private final Schema stagingSchema;
   private final Schema targetSchema;
-  private final String batchId;
+  private final long batchId;
   private final Blob blob;
 
-  public TableBlob(String dataset, String table, Schema targetSchema, Schema stagingSchema, String batchId, Blob blob) {
+  public TableBlob(String dataset, String table, Schema targetSchema, Schema stagingSchema, long batchId, Blob blob) {
     this.dataset = dataset;
     this.table = table;
     this.targetSchema = targetSchema;
@@ -55,7 +55,7 @@ public class TableBlob {
     return targetSchema;
   }
 
-  public String getBatchId() {
+  public long getBatchId() {
     return batchId;
   }
 

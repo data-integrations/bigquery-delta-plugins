@@ -23,14 +23,17 @@ import com.google.cloud.storage.Storage;
 import io.cdap.cdap.api.data.format.StructuredRecord;
 import io.cdap.cdap.api.data.schema.Schema;
 import io.cdap.delta.api.DMLEvent;
+import io.cdap.delta.api.DeltaTargetContext;
+import io.cdap.delta.api.ReplicationError;
 import io.cdap.delta.api.Sequenced;
 import org.apache.avro.file.DataFileWriter;
 import org.apache.avro.io.DatumWriter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.nio.channels.Channels;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -49,19 +52,22 @@ public class MultiGCSWriter {
   private final String baseObjectName;
   private final Map<Key, TableObject> objects;
   private final Map<Schema, org.apache.avro.Schema> schemaMap;
+  private final DeltaTargetContext context;
 
-  public MultiGCSWriter(Storage storage, String bucket, String baseObjectName) {
+  public MultiGCSWriter(Storage storage, String bucket, String baseObjectName,
+                        DeltaTargetContext context) {
     this.storage = storage;
     this.bucket = bucket;
     this.baseObjectName = baseObjectName;
     this.objects = new HashMap<>();
     this.schemaMap = new HashMap<>();
+    this.context = context;
   }
 
   public synchronized void write(Sequenced<DMLEvent> sequencedEvent) {
     DMLEvent event = sequencedEvent.getEvent();
     Key key = new Key(event.getDatabase(), event.getTable());
-    TableObject tableObject = objects.computeIfAbsent(key, t -> new TableObject());
+    TableObject tableObject = objects.computeIfAbsent(key, t -> new TableObject(event.getDatabase(), event.getTable()));
     try {
       tableObject.writeEvent(sequencedEvent);
     } catch (IOException e) {
@@ -70,21 +76,30 @@ public class MultiGCSWriter {
     }
   }
 
-  public synchronized Collection<TableBlob> flush() {
-    // TODO: write in parallel
+  public synchronized Collection<TableBlob> flush() throws IOException {
     List<TableBlob> writtenObjects = new ArrayList<>(objects.size());
+    IOException error = null;
     for (Map.Entry<Key, TableObject> entry : objects.entrySet()) {
       TableObject tableObject = entry.getValue();
-      String dataset = entry.getKey().database;
-      String table = entry.getKey().table;
-      String objectName = String.format("%s%s/%s/%s", baseObjectName, dataset, table, tableObject.batchId);
-      BlobId blobId = BlobId.of(bucket, objectName);
-      BlobInfo blobInfo = BlobInfo.newBuilder(blobId).build();
-      byte[] content = tableObject.close();
-      // TODO: retry on failure
-      Blob blob = storage.create(blobInfo, content, Storage.BlobTargetOption.doesNotExist());
-      writtenObjects.add(new TableBlob(dataset, table, tableObject.targetSchema, tableObject.stagingSchema,
-                                       tableObject.batchId, blob));
+      try {
+        tableObject.close();
+      } catch (IOException e) {
+        String errMsg = String.format("Error writing batch of changes for %s.%s to GCS",
+                                      tableObject.dataset, tableObject.table);
+        LOG.error(errMsg, e);
+        context.setTableError(tableObject.dataset, tableObject.table, new ReplicationError(errMsg, e.getStackTrace()));
+        if (error == null) {
+          error = e;
+        } else {
+          error.addSuppressed(e);
+        }
+      }
+      Blob blob = storage.get(tableObject.blobId);
+      writtenObjects.add(new TableBlob(tableObject.dataset, tableObject.table, tableObject.targetSchema,
+                                       tableObject.stagingSchema, tableObject.batchId, blob));
+    }
+    if (error != null) {
+      throw error;
     }
     objects.clear();
     return writtenObjects;
@@ -122,15 +137,23 @@ public class MultiGCSWriter {
    * Content to write to a GCS Object for a BigQuery table.
    */
   private class TableObject {
-    private final ByteArrayOutputStream outputStream;
-    private final String batchId;
+    private final OutputStream outputStream;
+    private final long batchId;
+    private final String dataset;
+    private final String table;
+    private final BlobId blobId;
     private Schema stagingSchema;
     private Schema targetSchema;
     private DataFileWriter<StructuredRecord> avroWriter;
 
-    private TableObject() {
-      outputStream = new ByteArrayOutputStream();
-      batchId = String.format("%d-%s", System.currentTimeMillis(), UUID.randomUUID());
+    private TableObject(String dataset, String table) {
+      this.dataset = dataset;
+      this.table = table;
+      batchId = System.currentTimeMillis();
+      String objectName = String.format("%s%s/%s/%d", baseObjectName, dataset, table, batchId);
+      blobId = BlobId.of(bucket, objectName);
+      BlobInfo blobInfo = BlobInfo.newBuilder(blobId).build();
+      outputStream = Channels.newOutputStream(storage.writer(blobInfo));
     }
 
     private void writeEvent(Sequenced<DMLEvent> sequencedEvent) throws IOException {
@@ -150,16 +173,16 @@ public class MultiGCSWriter {
       avroWriter.append(createStagingRecord(sequencedEvent));
     }
 
-    private byte[] close() {
+    private void close() throws IOException {
       if (avroWriter != null) {
         try {
           avroWriter.close();
-        } catch (IOException e) {
-          // should never happen since it's an in-memory byte stream
+        } finally {
+          outputStream.close();
         }
-        return outputStream.toByteArray();
+      } else {
+        outputStream.close();
       }
-      return new byte[0];
     }
 
     private Schema getTargetSchema(Schema schema) {
@@ -174,7 +197,7 @@ public class MultiGCSWriter {
       List<Schema.Field> fields = new ArrayList<>(schema.getFields().size() + 3);
       fields.addAll(schema.getFields());
       fields.add(Schema.Field.of("_op", Schema.of(Schema.Type.STRING)));
-      fields.add(Schema.Field.of("_batch_id", Schema.of(Schema.Type.STRING)));
+      fields.add(Schema.Field.of("_batch_id", Schema.of(Schema.Type.LONG)));
       fields.add(Schema.Field.of("_sequence_num", Schema.of(Schema.Type.LONG)));
       return Schema.recordOf(schema.getRecordName() + ".staging", fields);
     }

@@ -27,8 +27,12 @@
   <packaging>jar</packaging>
 
   <properties>
+    <avro.version>1.8.2</avro.version>
+    <bigquery.version>1.78.0</bigquery.version>
     <cdap.version>6.0.0</cdap.version>
     <delta.version>0.1.0-SNAPSHOT</delta.version>
+    <failsafe.version>2.3.3</failsafe.version>
+    <gcs.version>1.78.0</gcs.version>
   </properties>
 
   <repositories>
@@ -89,17 +93,22 @@
     <dependency>
       <groupId>com.google.cloud</groupId>
       <artifactId>google-cloud-bigquery</artifactId>
-      <version>1.78.0</version>
+      <version>${bigquery.version}</version>
     </dependency>
     <dependency>
       <groupId>com.google.cloud</groupId>
       <artifactId>google-cloud-storage</artifactId>
-      <version>1.78.0</version>
+      <version>${gcs.version}</version>
     </dependency>
     <dependency>
       <groupId>org.apache.avro</groupId>
       <artifactId>avro</artifactId>
-      <version>1.8.2</version>
+      <version>${avro.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>net.jodah</groupId>
+      <artifactId>failsafe</artifactId>
+      <version>${failsafe.version}</version>
     </dependency>
   </dependencies>
 
