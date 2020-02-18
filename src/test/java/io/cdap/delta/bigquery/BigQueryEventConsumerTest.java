@@ -178,11 +178,11 @@ public class BigQueryEventConsumerTest {
         send events:
           insert <0, 'alice', 0L, 1970-01-01, 0.0>
           insert <1, 'bob', 86400L, 1970-01-02, 1.0>
-          update 'alice' to 'Alice'
+          update id=0 to id=2
           delete id=1 (bob)
 
         should result in:
-          0, 'Alice', 1000L, 1970-01-01, 0.0
+          2, 'alice', 1000L, 1970-01-01, 0.0
      */
     StructuredRecord insert1 = StructuredRecord.builder(schema)
       .set("id", 0)
@@ -241,8 +241,8 @@ public class BigQueryEventConsumerTest {
     Assert.assertEquals(1.0d, row.get("score").getDoubleValue(), 0.000001d);
 
     StructuredRecord update = StructuredRecord.builder(schema)
-      .set("id", insert1.get("id"))
-      .set("name", "Alice")
+      .set("id", 2)
+      .set("name", insert1.get("name"))
       .setTimestamp("created", insert1.getTimestamp("created"))
       .setDate("bday", insert1.getDate("bday"))
       .set("score", insert1.get("score"))
@@ -253,6 +253,7 @@ public class BigQueryEventConsumerTest {
       .setSnapshot(false)
       .setDatabase(dataset)
       .setTable(tableName)
+      .setPreviousRow(insert1)
       .setRow(update)
       .setOffset(new Offset())
       .build();
@@ -274,8 +275,8 @@ public class BigQueryEventConsumerTest {
     result = executeQuery(String.format("SELECT * from %s.%s", dataset, tableName));
     Assert.assertEquals(1L, result.getTotalRows());
     row = result.iterateAll().iterator().next();
-    Assert.assertEquals(0L, row.get("id").getLongValue());
-    Assert.assertEquals("Alice", row.get("name").getStringValue());
+    Assert.assertEquals(2L, row.get("id").getLongValue());
+    Assert.assertEquals("alice", row.get("name").getStringValue());
     Assert.assertEquals(0L, row.get("created").getTimestampValue());
     Assert.assertEquals("1970-01-01", row.get("bday").getStringValue());
     Assert.assertEquals(0.0d, row.get("score").getDoubleValue(), 0.000001d);
