@@ -23,6 +23,7 @@ import com.google.cloud.storage.Storage;
 import io.cdap.cdap.api.data.format.StructuredRecord;
 import io.cdap.cdap.api.data.schema.Schema;
 import io.cdap.delta.api.DMLEvent;
+import io.cdap.delta.api.DMLOperation;
 import io.cdap.delta.api.DeltaTargetContext;
 import io.cdap.delta.api.ReplicationError;
 import io.cdap.delta.api.Sequenced;
@@ -40,7 +41,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.UUID;
 
 /**
  * Writes to multiple GCS files.
@@ -192,13 +192,35 @@ public class MultiGCSWriter {
       return Schema.recordOf(schema.getRecordName() + ".target", fields);
     }
 
-    // the original schema plus _op, _batch_id, _sequence_num
+    /*
+        The staging table contains information about the batch id, sequence number, operation type,
+        the previous value, and the new value. Previous value is null except for update events.
+
+        For example, suppose the source table has two columns -- id (long) and name (string).
+        The staging table would have the following columns:
+
+          _op (string)
+          _batch_id (long)
+          _sequence_num (long)
+          id (long)
+          name (string)
+          _before_id (long)
+          _before_name (string)
+     */
     private Schema getStagingSchema(Schema schema) {
-      List<Schema.Field> fields = new ArrayList<>(schema.getFields().size() + 3);
-      fields.addAll(schema.getFields());
+      List<Schema.Field> fields = new ArrayList<>(2 * schema.getFields().size() + 3);
       fields.add(Schema.Field.of("_op", Schema.of(Schema.Type.STRING)));
       fields.add(Schema.Field.of("_batch_id", Schema.of(Schema.Type.LONG)));
-      fields.add(Schema.Field.of("_sequence_num", Schema.of(Schema.Type.LONG)));
+      fields.addAll(schema.getFields());
+      for (Schema.Field field : schema.getFields()) {
+        if ("_sequence_num".equals(field.getName())) {
+          continue;
+        }
+        String beforeName = "_before_" + field.getName();
+        Schema beforeSchema = field.getSchema();
+        beforeSchema = beforeSchema.isNullable() ? beforeSchema : Schema.nullableOf(beforeSchema);
+        fields.add(Schema.Field.of(beforeName, beforeSchema));
+      }
       return Schema.recordOf(schema.getRecordName() + ".staging", fields);
     }
 
@@ -206,12 +228,34 @@ public class MultiGCSWriter {
       DMLEvent event = sequencedEvent.getEvent();
       StructuredRecord row = event.getRow();
       StructuredRecord.Builder builder = StructuredRecord.builder(stagingSchema);
-      for (Schema.Field field : row.getSchema().getFields()) {
-        builder.set(field.getName(), row.get(field.getName()));
-      }
       builder.set("_op", event.getOperation().name());
       builder.set("_batch_id", batchId);
       builder.set("_sequence_num", sequencedEvent.getSequenceNumber());
+      for (Schema.Field field : row.getSchema().getFields()) {
+        builder.set(field.getName(), row.get(field.getName()));
+      }
+
+      StructuredRecord beforeRow = null;
+      switch (event.getOperation()) {
+        case UPDATE:
+          beforeRow = event.getPreviousRow();
+          if (beforeRow == null) {
+            // should never happen unless the source is implemented incorrectly
+            throw new IllegalStateException(String.format(
+              "Encountered an update event for %s.%s that did not include the previous column values. "
+                + "Previous column values are required for replication.",
+              event.getDatabase(), event.getTable()));
+          }
+          break;
+        case DELETE:
+          beforeRow = row;
+          break;
+      }
+      if (beforeRow != null) {
+        for (Schema.Field field : beforeRow.getSchema().getFields()) {
+          builder.set("_before_" + field.getName(), beforeRow.get(field.getName()));
+        }
+      }
       return builder.build();
     }
   }

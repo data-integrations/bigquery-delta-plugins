@@ -33,6 +33,7 @@
     <delta.version>0.1.0-SNAPSHOT</delta.version>
     <failsafe.version>2.3.3</failsafe.version>
     <gcs.version>1.78.0</gcs.version>
+    <logback.version>1.2.3</logback.version>
   </properties>
 
   <repositories>
@@ -109,6 +110,12 @@
       <groupId>net.jodah</groupId>
       <artifactId>failsafe</artifactId>
       <version>${failsafe.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>ch.qos.logback</groupId>
+      <artifactId>logback-classic</artifactId>
+      <version>${logback.version}</version>
+      <scope>test</scope>
     </dependency>
   </dependencies>
 
