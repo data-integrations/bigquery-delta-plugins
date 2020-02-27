@@ -306,6 +306,7 @@ public class BigQueryEventConsumer implements EventConsumer {
       latestSeenSequence.put(TableId.of(project, event.getDatabase(), event.getTable()),
                              sequencedEvent.getSequenceNumber());
     }
+    context.incrementCount(event.getOperation());
     if (event.isSnapshot()) {
       context.setTableSnapshotting(event.getDatabase(), event.getTable());
     } else {
@@ -352,6 +353,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     latestOffset = event.getOffset();
     latestSequenceNum = sequencedEvent.getSequenceNumber();
     currentBatchSize++;
+    context.incrementCount(event.getOperation());
     if (currentBatchSize >= batchMaxRows) {
       flush();
     }
