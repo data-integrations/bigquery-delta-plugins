@@ -10,7 +10,10 @@
         {
           "name": "project",
           "label": "Project ID",
-          "widget-type": "textbox"
+          "widget-type": "textbox",
+          "widget-attributes": {
+            "default": "auto-detect"
+          }
         },
         {
           "name": "stagingBucket",
