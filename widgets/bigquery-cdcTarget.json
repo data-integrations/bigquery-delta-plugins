@@ -13,11 +13,6 @@
           "widget-type": "textbox"
         },
         {
-          "name": "serviceAccountKey",
-          "label": "Service Account Key",
-          "widget-type": "textarea"
-        },
-        {
           "name": "stagingBucket",
           "label": "Staging Bucket Name",
           "widget-type": "textbox"
@@ -25,7 +20,17 @@
       ]
     },
     {
-      "label" : "CDC Configuration",
+      "label": "Credentials",
+      "properties": [
+        {
+          "name": "serviceAccountKey",
+          "label": "Service Account Key",
+          "widget-type": "password"
+        }
+      ]
+    },
+    {
+      "label" : "Advanced",
       "properties" : [
         {
           "name": "maxBatchSeconds",
@@ -38,12 +43,18 @@
         {
           "name": "maxBatchChanges",
           "label": "Max Batch Changes",
-          "widget-type": "textbox"
+          "widget-type": "textbox",
+          "widget-attributes": {
+            "default": "10000"
+          }
         },
         {
           "name": "stagingTablePrefix",
           "label": "Staging Table Prefix",
-          "widget-type": "textbox"
+          "widget-type": "textbox",
+          "widget-attributes": {
+            "default": "_staging_"
+          }
         }
       ]
     }
