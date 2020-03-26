@@ -249,20 +249,19 @@ public class BigQueryEventConsumer implements EventConsumer {
         TableId tableId = TableId.of(project, event.getDatabase(), event.getTable());
         Table table = bigQuery.getTable(tableId);
         // TODO: check schema of table if it exists already
-        // TODO: add a way to get PK of a table through Delta API?
         if (table == null) {
           TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
             .setSchema(Schemas.convert(addSequenceNumber(event.getSchema())))
             .build();
-          String description;
+          String primaryKey;
           if (event.getPrimaryKey().isEmpty()) {
-            description = "Primary Key: _sequence_num";
+            primaryKey = "_sequence_num";
           } else {
-            description = "Primary Key: " + event.getPrimaryKey().stream().collect(Collectors.joining(","));
+            primaryKey = event.getPrimaryKey().stream().collect(Collectors.joining(","));
           }
-          TableInfo tableInfo = TableInfo.newBuilder(tableId, tableDefinition)
-            .setDescription(description)
-            .build();
+          context.putState(String.format("%s-%s-primary-key", tableId.getDataset(), tableId.getTable()),
+                           primaryKey.getBytes());
+          TableInfo tableInfo = TableInfo.newBuilder(tableId, tableDefinition).build();
           bigQuery.create(tableInfo);
         }
         break;
@@ -461,23 +460,17 @@ public class BigQueryEventConsumer implements EventConsumer {
                                  int attemptNumber) throws InterruptedException {
     LOG.debug("Merging batch {} for {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
     TableId targetTableId = TableId.of(project, blob.getDataset(), blob.getTable());
-    Table targetTable = bigQuery.getTable(targetTableId);
-    if (targetTable == null) {
-      // We require that the table already exists and that it was created by this plugin when
-      // handling a DDL create table event.
-      // this is because the primary key for the table is contained in the DDL event, but not in DML events.
-      // so the primary key info is stored in the table definition.
-      // If we had the primary key information here, we could create the table now if it didn't exist for some reason
+    List<String> primaryKey;
+    try {
+      byte[] pkBytes = context.getState(
+        String.format("%s-%s-primary-key", targetTableId.getDataset(), targetTableId.getTable()));
+      String pkStr = pkBytes == null ? "_sequence_num" : new String(pkBytes);
+      primaryKey = Arrays.stream(pkStr.split(",")).collect(Collectors.toList());
+    } catch (Exception e) {
       throw new IllegalStateException(
-        String.format("No target table %s.%s found. Please ensure that tables created by the replicator are not "
-                        + "deleted by other processes.", blob.getDataset(), blob.getTable()));
+        String.format("Not able to read state of primary key for table %s in database %s.",
+                      blob.getDataset(), blob.getTable()), e);
     }
-
-    // TODO: figure app should provide a way to get table info given an offset
-    String pkStr = targetTable.getDescription();
-    pkStr = pkStr == null || !pkStr.startsWith("Primary Key: ") ?
-      "_sequence_num" : pkStr.substring("Primary Key: ".length());
-    List<String> primaryKey = Arrays.stream(pkStr.split(",")).collect(Collectors.toList());
 
     /*
      * Merge data from staging BQ table into target table.
