@@ -150,6 +150,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final BigQuery bigQuery;
   private final int batchMaxRows;
   private final int batchMaxSecondsElapsed;
+  private final String stagingTablePrefix;
   private final MultiGCSWriter gcsWriter;
   private final Bucket bucket;
   private final String project;
@@ -168,11 +169,12 @@ public class BigQueryEventConsumer implements EventConsumer {
   // Without keeping the entire batch in memory, there would be no way to recover the records that failed to write
 
   BigQueryEventConsumer(DeltaTargetContext context, Storage storage, BigQuery bigQuery, Bucket bucket,
-                        String project, int batchMaxRows, int batchMaxSecondsElapsed) {
+                        String project, int batchMaxRows, int batchMaxSecondsElapsed, String stagingTablePrefix) {
     this.context = context;
     this.bigQuery = bigQuery;
     this.batchMaxRows = batchMaxRows;
     this.batchMaxSecondsElapsed = batchMaxSecondsElapsed;
+    this.stagingTablePrefix = stagingTablePrefix;
     this.gcsWriter = new MultiGCSWriter(storage, bucket.getName(),
                                         String.format("cdap/delta/%s/", context.getApplicationName()),
                                         context);
@@ -398,7 +400,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   private void mergeTableChanges(TableBlob blob) throws DeltaFailureException, InterruptedException {
-    TableId stagingTableId = TableId.of(project, blob.getDataset(), "_staging_" + blob.getTable());
+    TableId stagingTableId = TableId.of(project, blob.getDataset(), stagingTablePrefix + blob.getTable());
 
     runWithRetries(runContext -> loadStagingTable(stagingTableId, blob, runContext.getAttemptCount()),
                    blob,

@@ -95,13 +95,13 @@ public class BigQueryTarget implements DeltaTarget {
       }
     }
 
-    return new BigQueryEventConsumer(context, storage, bigQuery, bucket, project,
-                                     conf.getMaxBatchChanges(), conf.getMaxBatchSeconds());
+    return new BigQueryEventConsumer(context, storage, bigQuery, bucket, project, conf.getMaxBatchChanges(),
+                                     conf.getMaxBatchSeconds(), conf.getStagingTablePrefix());
   }
 
   @Override
   public TableAssessor<StandardizedTableDetail> createTableAssessor(Configurer configurer) {
-    return new BigQueryAssessor();
+    return new BigQueryAssessor(conf.getStagingTablePrefix());
   }
 
   /**
