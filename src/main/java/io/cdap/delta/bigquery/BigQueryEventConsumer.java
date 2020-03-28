@@ -156,6 +156,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final RetryPolicy<Object> commitRetryPolicy;
   private final Map<TableId, Long> latestSeenSequence;
   private final Map<TableId, Long> latestMergedSequence;
+  private final Map<TableId, List<String>> primaryKeyStore;
   private ScheduledExecutorService executorService;
   private ScheduledFuture<?> scheduledFlush;
   private Offset latestOffset;
@@ -185,6 +186,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     // these maps are only accessed in synchronized methods so they do not need to be thread safe.
     this.latestMergedSequence = new HashMap<>();
     this.latestSeenSequence = new HashMap<>();
+    this.primaryKeyStore = new HashMap<>();
     this.commitRetryPolicy = new RetryPolicy<>()
       .withMaxAttempts(Integer.MAX_VALUE)
       .withMaxDuration(Duration.of(5, ChronoUnit.MINUTES))
@@ -241,6 +243,7 @@ public class BigQueryEventConsumer implements EventConsumer {
         break;
       case DROP_DATABASE:
         datasetId = DatasetId.of(project, event.getDatabase());
+        primaryKeyStore.clear();
         if (bigQuery.getDataset(datasetId) != null) {
           bigQuery.delete(datasetId);
         }
@@ -253,14 +256,17 @@ public class BigQueryEventConsumer implements EventConsumer {
           TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
             .setSchema(Schemas.convert(addSequenceNumber(event.getSchema())))
             .build();
-          String primaryKey;
-          if (event.getPrimaryKey().isEmpty()) {
-            primaryKey = "_sequence_num";
-          } else {
-            primaryKey = event.getPrimaryKey().stream().collect(Collectors.joining(","));
+          List<String> primaryKeys = event.getPrimaryKey();
+          if (primaryKeys.isEmpty()) {
+            throw new DeltaFailureException(
+              String.format("Primary key should not be empty for table '%s' in dataset '%s'",
+                            tableId.getTable(), tableId.getDataset()));
           }
+
+          String pkStr = primaryKeys.stream().collect(Collectors.joining(","));
+          primaryKeyStore.put(tableId, primaryKeys);
           context.putState(String.format("%s-%s-primary-key", tableId.getDataset(), tableId.getTable()),
-                           primaryKey.getBytes());
+                           pkStr.getBytes());
           TableInfo tableInfo = TableInfo.newBuilder(tableId, tableDefinition).build();
           bigQuery.create(tableInfo);
         }
@@ -270,6 +276,7 @@ public class BigQueryEventConsumer implements EventConsumer {
         // shouldn't exist
         flush();
         tableId = TableId.of(project, event.getDatabase(), event.getTable());
+        primaryKeyStore.remove(tableId);
         table = bigQuery.getTable(tableId);
         if (table != null) {
           bigQuery.delete(tableId);
@@ -293,7 +300,8 @@ public class BigQueryEventConsumer implements EventConsumer {
         // TODO: alter the staging table as well
         break;
       case RENAME_TABLE:
-        // TODO: flush changes, execute a copy job, delete previous table, drop old staging table
+        // TODO: flush changes, execute a copy job, delete previous table, drop old staging table, remove old entry
+        //  in primaryKeyStore, put new entry in primaryKeyStore
         break;
       case TRUNCATE_TABLE:
         // TODO: flush changes then run a DELETE from table WHERE 1=1 query
@@ -457,19 +465,28 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   private void mergeStagingTable(TableId stagingTableId, TableBlob blob,
-                                 int attemptNumber) throws InterruptedException {
+                                 int attemptNumber) throws InterruptedException, DeltaFailureException {
     LOG.debug("Merging batch {} for {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
     TableId targetTableId = TableId.of(project, blob.getDataset(), blob.getTable());
-    List<String> primaryKey;
-    try {
-      byte[] pkBytes = context.getState(
-        String.format("%s-%s-primary-key", targetTableId.getDataset(), targetTableId.getTable()));
-      String pkStr = pkBytes == null ? "_sequence_num" : new String(pkBytes);
+    List<String> primaryKey = primaryKeyStore.get(targetTableId);
+    if (primaryKey == null) {
+      byte[] pkBytes;
+      try {
+        pkBytes = context.getState(String.format("%s-%s-primary-key", targetTableId.getDataset(),
+                                                 targetTableId.getTable()));
+      } catch (Exception e) {
+        throw new DeltaFailureException(
+          String.format("Not able to read state of primary key for table %s in dataset %s.",
+                        targetTableId.getTable(), targetTableId.getDataset()), e);
+      }
+
+      if (pkBytes == null) {
+        throw new DeltaFailureException(
+          String.format("State of primary key for table %s in dataset %s does not exist.", targetTableId.getTable(),
+                        targetTableId.getDataset()));
+      }
+      String pkStr = new String(pkBytes);
       primaryKey = Arrays.stream(pkStr.split(",")).collect(Collectors.toList());
-    } catch (Exception e) {
-      throw new IllegalStateException(
-        String.format("Not able to read state of primary key for table %s in database %s.",
-                      blob.getDataset(), blob.getTable()), e);
     }
 
     /*
