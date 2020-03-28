@@ -146,6 +146,12 @@ import java.util.stream.Collectors;
  */
 public class BigQueryEventConsumer implements EventConsumer {
   private static final Logger LOG = LoggerFactory.getLogger(BigQueryEventConsumer.class);
+  static final int MAX_LENGTH = 1024;
+  // according to big query dataset and table naming convention, valid name should only contain letters (upper or
+  // lower case), numbers, and underscores
+  static final String VALID_NAME_REGEX = "[\\w]+";
+  private static final String INVALID_NAME_REGEX = "[^\\w]+";
+
   private final DeltaTargetContext context;
   private final BigQuery bigQuery;
   private final int batchMaxRows;
@@ -689,5 +695,18 @@ public class BigQueryEventConsumer implements EventConsumer {
       }
       throw e;
     }
+  }
+
+  public static String normalize(String name) {
+    // replace invalid chars with underscores if there are any
+    if (!name.matches(VALID_NAME_REGEX)) {
+      name = name.replaceAll(INVALID_NAME_REGEX, "_");
+    }
+
+    // truncate the name if it exceeds the max length
+    if (name.length() > MAX_LENGTH) {
+      name = name.substring(0, MAX_LENGTH);
+    }
+    return name;
   }
 }
