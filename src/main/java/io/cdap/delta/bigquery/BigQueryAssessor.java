@@ -78,7 +78,7 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
                     String.format("Database '%s' will be normalized to '%s' to meet BigQuery's dataset name " +
                                     "requirements.", dbName, normalizedDBName),
                     "Verify that multiple databases will not be normalized to the same BigQuery dataset name",
-                    "There will be conflicts if multiple databases would normalize to the same dataset name"));
+                    "If multiple databases are normalized to the same name, conflicts can occur"));
     }
     if (stagingTablePrefix.length() + tableName.length() > BigQueryEventConsumer.MAX_LENGTH ||
       !tableName.matches(BigQueryEventConsumer.VALID_NAME_REGEX) ||
@@ -90,7 +90,7 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
                                   tableName, normalizedTableName, normalizedStagingTableName),
                     "Verify that multiple tables will not be normalized to the same BigQuery table name " +
                       "under the same dataset",
-                    "There will be conflicts if multiple tables would normalize to the same name"));
+                    "If multiple tables are normalized to the same name, conflicts can occur."));
     }
 
     return new TableAssessment(columnAssessments, problems);
