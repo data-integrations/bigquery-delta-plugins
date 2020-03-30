@@ -60,6 +60,7 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
     List<Problem> problems = new ArrayList<>();
     String dbName = tableDetail.getDatabase();
     String tableName = tableDetail.getTable();
+    String stagingTableName = stagingTablePrefix + tableName;
     if (tableDetail.getPrimaryKey().isEmpty()) {
       problems.add(
         new Problem("Missing Primary Key",
@@ -71,8 +72,8 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
 
     String normalizedDBName = BigQueryEventConsumer.normalize(dbName);
     String normalizedTableName = BigQueryEventConsumer.normalize(tableName);
-    String normalizedStagingTableName = BigQueryEventConsumer.normalize(stagingTablePrefix + tableName);
-    if (dbName.length() > BigQueryEventConsumer.MAX_LENGTH || !dbName.matches(BigQueryEventConsumer.VALID_NAME_REGEX)) {
+    String normalizedStagingTableName = BigQueryEventConsumer.normalize(stagingTableName);
+    if (!dbName.equals(normalizedDBName)) {
       problems.add(
         new Problem("Normalizing Database Name",
                     String.format("Database '%s' will be normalized to '%s' to meet BigQuery's dataset name " +
@@ -80,9 +81,7 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
                     "Verify that multiple databases will not be normalized to the same BigQuery dataset name",
                     "If multiple databases are normalized to the same name, conflicts can occur"));
     }
-    if (stagingTablePrefix.length() + tableName.length() > BigQueryEventConsumer.MAX_LENGTH ||
-      !tableName.matches(BigQueryEventConsumer.VALID_NAME_REGEX) ||
-      !stagingTablePrefix.matches(BigQueryEventConsumer.VALID_NAME_REGEX)) {
+    if (!tableName.equals(normalizedTableName) || !stagingTableName.equals(normalizedStagingTableName)) {
       problems.add(
         new Problem("Normalizing Table Name",
                     String.format("Table '%s' will be normalized to '%s' and the staging table will be normalized " +
