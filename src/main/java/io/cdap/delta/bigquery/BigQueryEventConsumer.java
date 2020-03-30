@@ -146,10 +146,10 @@ import java.util.stream.Collectors;
  */
 public class BigQueryEventConsumer implements EventConsumer {
   private static final Logger LOG = LoggerFactory.getLogger(BigQueryEventConsumer.class);
-  static final int MAX_LENGTH = 1024;
+  private static final int MAX_LENGTH = 1024;
   // according to big query dataset and table naming convention, valid name should only contain letters (upper or
   // lower case), numbers, and underscores
-  static final String VALID_NAME_REGEX = "[\\w]+";
+  private static final String VALID_NAME_REGEX = "[\\w]+";
   private static final String INVALID_NAME_REGEX = "[^\\w]+";
 
   private final DeltaTargetContext context;
