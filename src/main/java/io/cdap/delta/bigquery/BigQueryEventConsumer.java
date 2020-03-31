@@ -146,10 +146,17 @@ import java.util.stream.Collectors;
  */
 public class BigQueryEventConsumer implements EventConsumer {
   private static final Logger LOG = LoggerFactory.getLogger(BigQueryEventConsumer.class);
+  private static final int MAX_LENGTH = 1024;
+  // according to big query dataset and table naming convention, valid name should only contain letters (upper or
+  // lower case), numbers, and underscores
+  private static final String VALID_NAME_REGEX = "[\\w]+";
+  private static final String INVALID_NAME_REGEX = "[^\\w]+";
+
   private final DeltaTargetContext context;
   private final BigQuery bigQuery;
   private final int batchMaxRows;
   private final int batchMaxSecondsElapsed;
+  private final String stagingTablePrefix;
   private final MultiGCSWriter gcsWriter;
   private final Bucket bucket;
   private final String project;
@@ -168,11 +175,12 @@ public class BigQueryEventConsumer implements EventConsumer {
   // Without keeping the entire batch in memory, there would be no way to recover the records that failed to write
 
   BigQueryEventConsumer(DeltaTargetContext context, Storage storage, BigQuery bigQuery, Bucket bucket,
-                        String project, int batchMaxRows, int batchMaxSecondsElapsed) {
+                        String project, int batchMaxRows, int batchMaxSecondsElapsed, String stagingTablePrefix) {
     this.context = context;
     this.bigQuery = bigQuery;
     this.batchMaxRows = batchMaxRows;
     this.batchMaxSecondsElapsed = batchMaxSecondsElapsed;
+    this.stagingTablePrefix = stagingTablePrefix;
     this.gcsWriter = new MultiGCSWriter(storage, bucket.getName(),
                                         String.format("cdap/delta/%s/", context.getApplicationName()),
                                         context);
@@ -398,7 +406,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   private void mergeTableChanges(TableBlob blob) throws DeltaFailureException, InterruptedException {
-    TableId stagingTableId = TableId.of(project, blob.getDataset(), "_staging_" + blob.getTable());
+    TableId stagingTableId = TableId.of(project, blob.getDataset(), stagingTablePrefix + blob.getTable());
 
     runWithRetries(runContext -> loadStagingTable(stagingTableId, blob, runContext.getAttemptCount()),
                    blob,
@@ -687,5 +695,18 @@ public class BigQueryEventConsumer implements EventConsumer {
       }
       throw e;
     }
+  }
+
+  public static String normalize(String name) {
+    // replace invalid chars with underscores if there are any
+    if (!name.matches(VALID_NAME_REGEX)) {
+      name = name.replaceAll(INVALID_NAME_REGEX, "_");
+    }
+
+    // truncate the name if it exceeds the max length
+    if (name.length() > MAX_LENGTH) {
+      name = name.substring(0, MAX_LENGTH);
+    }
+    return name;
   }
 }

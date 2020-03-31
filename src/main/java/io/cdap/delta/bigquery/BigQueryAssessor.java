@@ -34,6 +34,11 @@ import java.util.List;
  * Assesses table information.
  */
 public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> {
+  private final String stagingTablePrefix;
+
+  public BigQueryAssessor(String stagingTablePrefix) {
+    this.stagingTablePrefix = stagingTablePrefix;
+  }
 
   @Override
   public TableAssessment assess(StandardizedTableDetail tableDetail) {
@@ -53,10 +58,40 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
       }
     }
     List<Problem> problems = new ArrayList<>();
+    String dbName = tableDetail.getDatabase();
+    String tableName = tableDetail.getTable();
+    String stagingTableName = stagingTablePrefix + tableName;
     if (tableDetail.getPrimaryKey().isEmpty()) {
-      problems.add(new Problem("Missing Primary Key", "Tables must have a primary key in order to be replicated.",
-                               "Please alter the table to use a primary key, or select a different table", ""));
+      problems.add(
+        new Problem("Missing Primary Key",
+                    String.format("Table '%s' in database '%s' must have a primary key in order to be replicated",
+                                  dbName, tableName),
+                    "Please alter the table to use a primary key, or select a different table",
+                    "Not able to replicate this table in BigQuery side"));
     }
+
+    String normalizedDBName = BigQueryEventConsumer.normalize(dbName);
+    String normalizedTableName = BigQueryEventConsumer.normalize(tableName);
+    String normalizedStagingTableName = BigQueryEventConsumer.normalize(stagingTableName);
+    if (!dbName.equals(normalizedDBName)) {
+      problems.add(
+        new Problem("Normalizing Database Name",
+                    String.format("Database '%s' will be normalized to '%s' to meet BigQuery's dataset name " +
+                                    "requirements.", dbName, normalizedDBName),
+                    "Verify that multiple databases will not be normalized to the same BigQuery dataset name",
+                    "If multiple databases are normalized to the same name, conflicts can occur"));
+    }
+    if (!tableName.equals(normalizedTableName) || !stagingTableName.equals(normalizedStagingTableName)) {
+      problems.add(
+        new Problem("Normalizing Table Name",
+                    String.format("Table '%s' will be normalized to '%s' and the staging table will be normalized " +
+                                    "to '%s' to meet BigQuery's table name requirements.",
+                                  tableName, normalizedTableName, normalizedStagingTableName),
+                    "Verify that multiple tables will not be normalized to the same BigQuery table name " +
+                      "under the same dataset",
+                    "If multiple tables are normalized to the same name, conflicts can occur."));
+    }
+
     return new TableAssessment(columnAssessments, problems);
   }
 
