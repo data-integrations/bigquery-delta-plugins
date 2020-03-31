@@ -237,24 +237,25 @@ public class BigQueryEventConsumer implements EventConsumer {
       throw flushException;
     }
 
-    // TODO: sanitize dataset and table names
     DDLEvent event = sequencedEvent.getEvent();
+    String normalizedDatabaseName = normalize(event.getDatabase());
+    String normalizedTableName = normalize(event.getTable());
     switch (event.getOperation()) {
       case CREATE_DATABASE:
-        DatasetId datasetId = DatasetId.of(project, event.getDatabase());
+        DatasetId datasetId = DatasetId.of(project, normalizedDatabaseName);
         if (bigQuery.getDataset(datasetId) == null) {
           DatasetInfo datasetInfo = DatasetInfo.newBuilder(datasetId).setLocation(bucket.getLocation()).build();
           bigQuery.create(datasetInfo);
         }
         break;
       case DROP_DATABASE:
-        datasetId = DatasetId.of(project, event.getDatabase());
+        datasetId = DatasetId.of(project, normalizedDatabaseName);
         if (bigQuery.getDataset(datasetId) != null) {
           bigQuery.delete(datasetId);
         }
         break;
       case CREATE_TABLE:
-        TableId tableId = TableId.of(project, event.getDatabase(), event.getTable());
+        TableId tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
         Table table = bigQuery.getTable(tableId);
         // TODO: check schema of table if it exists already
         // TODO: add a way to get PK of a table through Delta API?
@@ -278,7 +279,7 @@ public class BigQueryEventConsumer implements EventConsumer {
         // need to flush changes before dropping the table, otherwise the next flush will write data that
         // shouldn't exist
         flush();
-        tableId = TableId.of(project, event.getDatabase(), event.getTable());
+        tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
         table = bigQuery.getTable(tableId);
         if (table != null) {
           bigQuery.delete(tableId);
@@ -288,7 +289,7 @@ public class BigQueryEventConsumer implements EventConsumer {
         // need to flush any changes before altering the table to ensure all changes before the schema change
         // are in the table when it is altered.
         flush();
-        tableId = TableId.of(project, event.getDatabase(), event.getTable());
+        tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
         table = bigQuery.getTable(tableId);
         TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
           .setSchema(Schemas.convert(addSequenceNumber(event.getSchema())))
@@ -310,15 +311,15 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
     latestOffset = event.getOffset();
     latestSequenceNum = sequencedEvent.getSequenceNumber();
-    if (event.getTable() != null) {
-      latestSeenSequence.put(TableId.of(project, event.getDatabase(), event.getTable()),
+    if (normalizedTableName != null) {
+      latestSeenSequence.put(TableId.of(project, normalizedDatabaseName, normalizedTableName),
                              sequencedEvent.getSequenceNumber());
     }
     context.incrementCount(event.getOperation());
     if (event.isSnapshot()) {
-      context.setTableSnapshotting(event.getDatabase(), event.getTable());
+      context.setTableSnapshotting(normalizedDatabaseName, normalizedTableName);
     } else {
-      context.setTableReplicating(event.getDatabase(), event.getTable());
+      context.setTableReplicating(normalizedDatabaseName, normalizedTableName);
     }
   }
 
@@ -349,17 +350,24 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
 
     DMLEvent event = sequencedEvent.getEvent();
-    gcsWriter.write(sequencedEvent);
+    String normalizedDatabaseName = normalize(event.getDatabase());
+    String normalizedTableName = normalize(event.getTable());
+    DMLEvent normalizedDMLEvent = DMLEvent.builder(event)
+      .setDatabase(normalizedDatabaseName)
+      .setTable(normalizedTableName)
+      .build();
+    long sequenceNumber = sequencedEvent.getSequenceNumber();
+    gcsWriter.write(new Sequenced<>(normalizedDMLEvent, sequenceNumber));
 
-    TableId tableId = TableId.of(project, event.getDatabase(), event.getTable());
-    latestSeenSequence.put(tableId, sequencedEvent.getSequenceNumber());
+    TableId tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
+    latestSeenSequence.put(tableId, sequenceNumber);
 
     if (!latestMergedSequence.containsKey(tableId)) {
       latestMergedSequence.put(tableId, getLatestSequenceNum(tableId));
     }
 
     latestOffset = event.getOffset();
-    latestSequenceNum = sequencedEvent.getSequenceNumber();
+    latestSequenceNum = sequenceNumber;
     currentBatchSize++;
     context.incrementCount(event.getOperation());
     if (currentBatchSize >= batchMaxRows) {
@@ -367,9 +375,9 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
 
     if (event.isSnapshot()) {
-      context.setTableSnapshotting(event.getDatabase(), event.getTable());
+      context.setTableSnapshotting(normalizedDatabaseName, normalizedTableName);
     } else {
-      context.setTableReplicating(event.getDatabase(), event.getTable());
+      context.setTableReplicating(normalizedDatabaseName, normalizedTableName);
     }
   }
 
@@ -406,7 +414,8 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   private void mergeTableChanges(TableBlob blob) throws DeltaFailureException, InterruptedException {
-    TableId stagingTableId = TableId.of(project, blob.getDataset(), stagingTablePrefix + blob.getTable());
+    String normalizedStagingTableName = normalize(stagingTablePrefix + blob.getTable());
+    TableId stagingTableId = TableId.of(project, blob.getDataset(), normalizedStagingTableName);
 
     runWithRetries(runContext -> loadStagingTable(stagingTableId, blob, runContext.getAttemptCount()),
                    blob,
