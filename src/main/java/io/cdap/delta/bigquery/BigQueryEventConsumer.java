@@ -37,6 +37,8 @@ import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.Bucket;
 import com.google.cloud.storage.Storage;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 import io.cdap.cdap.api.data.schema.Schema;
 import io.cdap.delta.api.DDLEvent;
 import io.cdap.delta.api.DMLEvent;
@@ -146,6 +148,7 @@ import java.util.stream.Collectors;
  */
 public class BigQueryEventConsumer implements EventConsumer {
   private static final Logger LOG = LoggerFactory.getLogger(BigQueryEventConsumer.class);
+  private static final Gson GSON = new Gson();
   private final DeltaTargetContext context;
   private final BigQuery bigQuery;
   private final int batchMaxRows;
@@ -259,14 +262,13 @@ public class BigQueryEventConsumer implements EventConsumer {
           List<String> primaryKeys = event.getPrimaryKey();
           if (primaryKeys.isEmpty()) {
             throw new DeltaFailureException(
-              String.format("Primary key should not be empty for table '%s' in dataset '%s'",
-                            tableId.getTable(), tableId.getDataset()));
+              String.format("Table '%s' in database '%s' has no primary key. Tables without a primary key are" +
+                              " not supported.", tableId.getTable(), tableId.getDataset()));
           }
 
-          String pkStr = primaryKeys.stream().collect(Collectors.joining(","));
           primaryKeyStore.put(tableId, primaryKeys);
           context.putState(String.format("%s-%s-primary-key", tableId.getDataset(), tableId.getTable()),
-                           pkStr.getBytes());
+                           GSON.toJson(primaryKeys).getBytes());
           TableInfo tableInfo = TableInfo.newBuilder(tableId, tableDefinition).build();
           bigQuery.create(tableInfo);
         }
@@ -465,28 +467,20 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   private void mergeStagingTable(TableId stagingTableId, TableBlob blob,
-                                 int attemptNumber) throws InterruptedException, DeltaFailureException {
+                                 int attemptNumber) throws InterruptedException, IOException, DeltaFailureException {
     LOG.debug("Merging batch {} for {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
     TableId targetTableId = TableId.of(project, blob.getDataset(), blob.getTable());
     List<String> primaryKey = primaryKeyStore.get(targetTableId);
     if (primaryKey == null) {
-      byte[] pkBytes;
-      try {
-        pkBytes = context.getState(String.format("%s-%s-primary-key", targetTableId.getDataset(),
+      byte[] pkBytes = context.getState(String.format("%s-%s-primary-key", targetTableId.getDataset(),
                                                  targetTableId.getTable()));
-      } catch (Exception e) {
-        throw new DeltaFailureException(
-          String.format("Not able to read state of primary key for table %s in dataset %s.",
-                        targetTableId.getTable(), targetTableId.getDataset()), e);
-      }
-
       if (pkBytes == null) {
         throw new DeltaFailureException(
-          String.format("State of primary key for table %s in dataset %s does not exist.", targetTableId.getTable(),
-                        targetTableId.getDataset()));
+          String.format("Primary key information for table '%s' in dataset '%s' could not be found. This can only " +
+                          "happen if state was manually deleted. Please create a new replicator and start again.",
+                        targetTableId.getTable(), targetTableId.getDataset()));
       }
-      String pkStr = new String(pkBytes);
-      primaryKey = Arrays.stream(pkStr.split(",")).collect(Collectors.toList());
+      primaryKey = GSON.fromJson(new String(pkBytes), new TypeToken<List<String>>() { }.getType());
     }
 
     /*
