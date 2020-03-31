@@ -352,16 +352,9 @@ public class BigQueryEventConsumer implements EventConsumer {
     DMLEvent event = sequencedEvent.getEvent();
     String normalizedDatabaseName = normalize(event.getDatabase());
     String normalizedTableName = normalize(event.getTable());
-    DMLEvent normalizedDMLEvent = DMLEvent.builder()
-      .setOffset(event.getOffset())
-      .setOperation(event.getOperation())
+    DMLEvent normalizedDMLEvent = DMLEvent.builder(event)
       .setDatabase(normalizedDatabaseName)
       .setTable(normalizedTableName)
-      .setTransactionId(event.getTransactionId())
-      .setIngestTimestamp(event.getIngestTimestampMillis())
-      .setSnapshot(event.isSnapshot())
-      .setPreviousRow(event.getPreviousRow())
-      .setRow(event.getRow())
       .build();
     long sequenceNumber = sequencedEvent.getSequenceNumber();
     gcsWriter.write(new Sequenced<>(normalizedDMLEvent, sequenceNumber));
