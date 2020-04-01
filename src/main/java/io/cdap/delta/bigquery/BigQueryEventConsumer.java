@@ -709,6 +709,11 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   public static String normalize(String name) {
+    if (name == null) {
+      // avoid potential NPE
+      return null;
+    }
+
     // replace invalid chars with underscores if there are any
     if (!name.matches(VALID_NAME_REGEX)) {
       name = name.replaceAll(INVALID_NAME_REGEX, "_");
