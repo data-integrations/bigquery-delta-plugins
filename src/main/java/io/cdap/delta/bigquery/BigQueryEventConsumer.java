@@ -274,7 +274,7 @@ public class BigQueryEventConsumer implements EventConsumer {
                               " not supported.", tableId.getTable(), tableId.getDataset()));
           }
           primaryKeyStore.put(tableId, primaryKeys);
-          context.putState(String.format("%s-%s-primary-key", tableId.getDataset(), tableId.getTable()),
+          context.putState(String.format("bigquery-%s-%s", tableId.getDataset(), tableId.getTable()),
                            Bytes.toBytes(GSON.toJson(new BigQueryTableState(primaryKeys))));
           TableInfo tableInfo = TableInfo.newBuilder(tableId, tableDefinition).build();
           bigQuery.create(tableInfo);
@@ -487,7 +487,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     TableId targetTableId = TableId.of(project, blob.getDataset(), blob.getTable());
     List<String> primaryKey = primaryKeyStore.get(targetTableId);
     if (primaryKey == null) {
-      byte[] stateBytes = context.getState(String.format("%s-%s-primary-key", targetTableId.getDataset(),
+      byte[] stateBytes = context.getState(String.format("bigquery-%s-%s", targetTableId.getDataset(),
                                                       targetTableId.getTable()));
       if (stateBytes == null) {
         throw new DeltaFailureException(
@@ -495,7 +495,8 @@ public class BigQueryEventConsumer implements EventConsumer {
                           "happen if state was manually deleted. Please create a new replicator and start again.",
                         targetTableId.getTable(), targetTableId.getDataset()));
       }
-      primaryKey = GSON.fromJson(new String(stateBytes), BigQueryTableState.class).getPrimaryKeys();
+      BigQueryTableState targetTableState = GSON.fromJson(new String(stateBytes), BigQueryTableState.class);
+      primaryKey = targetTableState.getPrimaryKeys();
     }
     /*
      * Merge data from staging BQ table into target table.
