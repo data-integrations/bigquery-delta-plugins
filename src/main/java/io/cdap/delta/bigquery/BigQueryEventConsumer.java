@@ -37,6 +37,8 @@ import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.Bucket;
 import com.google.cloud.storage.Storage;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.gson.Gson;
+import io.cdap.cdap.api.common.Bytes;
 import io.cdap.cdap.api.data.schema.Schema;
 import io.cdap.delta.api.DDLEvent;
 import io.cdap.delta.api.DMLEvent;
@@ -58,7 +60,6 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -151,6 +152,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   // lower case), numbers, and underscores
   private static final String VALID_NAME_REGEX = "[\\w]+";
   private static final String INVALID_NAME_REGEX = "[^\\w]+";
+  private static final Gson GSON = new Gson();
 
   private final DeltaTargetContext context;
   private final BigQuery bigQuery;
@@ -272,9 +274,9 @@ public class BigQueryEventConsumer implements EventConsumer {
                               " not supported.", tableId.getTable(), tableId.getDataset()));
           }
           primaryKeyStore.put(tableId, primaryKeys);
-
+          context.putState(String.format("%s-%s-primary-key", tableId.getDataset(), tableId.getTable()),
+                           Bytes.toBytes(GSON.toJson(new BigQueryTableState(primaryKeys))));
           TableInfo tableInfo = TableInfo.newBuilder(tableId, tableDefinition).build();
-          // store in local
           bigQuery.create(tableInfo);
         }
         break;
@@ -480,12 +482,20 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   private void mergeStagingTable(TableId stagingTableId, TableBlob blob,
-                                 int attemptNumber) throws InterruptedException {
+                                 int attemptNumber) throws InterruptedException, IOException, DeltaFailureException {
     LOG.debug("Merging batch {} for {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
     TableId targetTableId = TableId.of(project, blob.getDataset(), blob.getTable());
     List<String> primaryKey = primaryKeyStore.get(targetTableId);
     if (primaryKey == null) {
-      // restore from local
+      byte[] stateBytes = context.getState(String.format("%s-%s-primary-key", targetTableId.getDataset(),
+                                                      targetTableId.getTable()));
+      if (stateBytes == null) {
+        throw new DeltaFailureException(
+          String.format("Primary key information for table '%s' in dataset '%s' could not be found. This can only " +
+                          "happen if state was manually deleted. Please create a new replicator and start again.",
+                        targetTableId.getTable(), targetTableId.getDataset()));
+      }
+      primaryKey = GSON.fromJson(new String(stateBytes), BigQueryTableState.class).getPrimaryKeys();
     }
     /*
      * Merge data from staging BQ table into target table.
