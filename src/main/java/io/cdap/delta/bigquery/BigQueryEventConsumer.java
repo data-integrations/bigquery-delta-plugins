@@ -37,6 +37,8 @@ import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.Bucket;
 import com.google.cloud.storage.Storage;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.gson.Gson;
+import io.cdap.cdap.api.common.Bytes;
 import io.cdap.cdap.api.data.schema.Schema;
 import io.cdap.delta.api.DDLEvent;
 import io.cdap.delta.api.DMLEvent;
@@ -58,7 +60,6 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -151,6 +152,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   // lower case), numbers, and underscores
   private static final String VALID_NAME_REGEX = "[\\w]+";
   private static final String INVALID_NAME_REGEX = "[^\\w]+";
+  private static final Gson GSON = new Gson();
 
   private final DeltaTargetContext context;
   private final BigQuery bigQuery;
@@ -163,6 +165,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final RetryPolicy<Object> commitRetryPolicy;
   private final Map<TableId, Long> latestSeenSequence;
   private final Map<TableId, Long> latestMergedSequence;
+  private final Map<TableId, List<String>> primaryKeyStore;
   private ScheduledExecutorService executorService;
   private ScheduledFuture<?> scheduledFlush;
   private Offset latestOffset;
@@ -193,6 +196,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     // these maps are only accessed in synchronized methods so they do not need to be thread safe.
     this.latestMergedSequence = new HashMap<>();
     this.latestSeenSequence = new HashMap<>();
+    this.primaryKeyStore = new HashMap<>();
     this.commitRetryPolicy = new RetryPolicy<>()
       .withMaxAttempts(Integer.MAX_VALUE)
       .withMaxDuration(Duration.of(5, ChronoUnit.MINUTES))
@@ -250,6 +254,7 @@ public class BigQueryEventConsumer implements EventConsumer {
         break;
       case DROP_DATABASE:
         datasetId = DatasetId.of(project, normalizedDatabaseName);
+        primaryKeyStore.clear();
         if (bigQuery.getDataset(datasetId) != null) {
           bigQuery.delete(datasetId);
         }
@@ -258,20 +263,20 @@ public class BigQueryEventConsumer implements EventConsumer {
         TableId tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
         Table table = bigQuery.getTable(tableId);
         // TODO: check schema of table if it exists already
-        // TODO: add a way to get PK of a table through Delta API?
         if (table == null) {
           TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
             .setSchema(Schemas.convert(addSequenceNumber(event.getSchema())))
             .build();
-          String description;
-          if (event.getPrimaryKey().isEmpty()) {
-            description = "Primary Key: _sequence_num";
-          } else {
-            description = "Primary Key: " + event.getPrimaryKey().stream().collect(Collectors.joining(","));
+          List<String> primaryKeys = event.getPrimaryKey();
+          if (primaryKeys.isEmpty()) {
+            throw new DeltaFailureException(
+              String.format("Table '%s' in database '%s' has no primary key. Tables without a primary key are" +
+                              " not supported.", tableId.getTable(), tableId.getDataset()));
           }
-          TableInfo tableInfo = TableInfo.newBuilder(tableId, tableDefinition)
-            .setDescription(description)
-            .build();
+          primaryKeyStore.put(tableId, primaryKeys);
+          context.putState(String.format("bigquery-%s-%s", tableId.getDataset(), tableId.getTable()),
+                           Bytes.toBytes(GSON.toJson(new BigQueryTableState(primaryKeys))));
+          TableInfo tableInfo = TableInfo.newBuilder(tableId, tableDefinition).build();
           bigQuery.create(tableInfo);
         }
         break;
@@ -280,6 +285,7 @@ public class BigQueryEventConsumer implements EventConsumer {
         // shouldn't exist
         flush();
         tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
+        primaryKeyStore.remove(tableId);
         table = bigQuery.getTable(tableId);
         if (table != null) {
           bigQuery.delete(tableId);
@@ -303,7 +309,8 @@ public class BigQueryEventConsumer implements EventConsumer {
         // TODO: alter the staging table as well
         break;
       case RENAME_TABLE:
-        // TODO: flush changes, execute a copy job, delete previous table, drop old staging table
+        // TODO: flush changes, execute a copy job, delete previous table, drop old staging table, remove old entry
+        //  in primaryKeyStore, put new entry in primaryKeyStore
         break;
       case TRUNCATE_TABLE:
         // TODO: flush changes then run a DELETE from table WHERE 1=1 query
@@ -475,27 +482,22 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   private void mergeStagingTable(TableId stagingTableId, TableBlob blob,
-                                 int attemptNumber) throws InterruptedException {
+                                 int attemptNumber) throws InterruptedException, IOException, DeltaFailureException {
     LOG.debug("Merging batch {} for {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
     TableId targetTableId = TableId.of(project, blob.getDataset(), blob.getTable());
-    Table targetTable = bigQuery.getTable(targetTableId);
-    if (targetTable == null) {
-      // We require that the table already exists and that it was created by this plugin when
-      // handling a DDL create table event.
-      // this is because the primary key for the table is contained in the DDL event, but not in DML events.
-      // so the primary key info is stored in the table definition.
-      // If we had the primary key information here, we could create the table now if it didn't exist for some reason
-      throw new IllegalStateException(
-        String.format("No target table %s.%s found. Please ensure that tables created by the replicator are not "
-                        + "deleted by other processes.", blob.getDataset(), blob.getTable()));
+    List<String> primaryKey = primaryKeyStore.get(targetTableId);
+    if (primaryKey == null) {
+      byte[] stateBytes = context.getState(
+        String.format("bigquery-%s-%s", targetTableId.getDataset(), targetTableId.getTable()));
+      if (stateBytes == null) {
+        throw new DeltaFailureException(
+          String.format("Primary key information for table '%s' in dataset '%s' could not be found. This can only " +
+                          "happen if state was corrupted. Please create a new replicator and start again.",
+                        targetTableId.getTable(), targetTableId.getDataset()));
+      }
+      BigQueryTableState targetTableState = GSON.fromJson(new String(stateBytes), BigQueryTableState.class);
+      primaryKey = targetTableState.getPrimaryKeys();
     }
-
-    // TODO: figure app should provide a way to get table info given an offset
-    String pkStr = targetTable.getDescription();
-    pkStr = pkStr == null || !pkStr.startsWith("Primary Key: ") ?
-      "_sequence_num" : pkStr.substring("Primary Key: ".length());
-    List<String> primaryKey = Arrays.stream(pkStr.split(",")).collect(Collectors.toList());
-
     /*
      * Merge data from staging BQ table into target table.
      *
@@ -707,6 +709,11 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   public static String normalize(String name) {
+    if (name == null) {
+      // avoid potential NPE
+      return null;
+    }
+
     // replace invalid chars with underscores if there are any
     if (!name.matches(VALID_NAME_REGEX)) {
       name = name.replaceAll(INVALID_NAME_REGEX, "_");
