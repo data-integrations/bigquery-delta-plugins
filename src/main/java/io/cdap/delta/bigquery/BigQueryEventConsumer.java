@@ -487,12 +487,12 @@ public class BigQueryEventConsumer implements EventConsumer {
     TableId targetTableId = TableId.of(project, blob.getDataset(), blob.getTable());
     List<String> primaryKey = primaryKeyStore.get(targetTableId);
     if (primaryKey == null) {
-      byte[] stateBytes = context.getState(String.format("bigquery-%s-%s", targetTableId.getDataset(),
-                                                      targetTableId.getTable()));
+      byte[] stateBytes = context.getState(
+        String.format("bigquery-%s-%s", targetTableId.getDataset(), targetTableId.getTable()));
       if (stateBytes == null) {
         throw new DeltaFailureException(
           String.format("Primary key information for table '%s' in dataset '%s' could not be found. This can only " +
-                          "happen if state was manually deleted. Please create a new replicator and start again.",
+                          "happen if state was corrupted. Please create a new replicator and start again.",
                         targetTableId.getTable(), targetTableId.getDataset()));
       }
       BigQueryTableState targetTableState = GSON.fromJson(new String(stateBytes), BigQueryTableState.class);
