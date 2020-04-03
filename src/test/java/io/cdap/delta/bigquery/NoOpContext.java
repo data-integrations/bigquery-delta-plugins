@@ -26,6 +26,8 @@ import io.cdap.delta.api.DeltaTargetContext;
 import io.cdap.delta.api.Offset;
 import io.cdap.delta.api.ReplicationError;
 
+import java.util.HashMap;
+import java.util.Map;
 import javax.annotation.Nullable;
 
 /**
@@ -82,6 +84,11 @@ public class NoOpContext implements DeltaTargetContext {
   @Override
   public Metrics getMetrics() {
     return null;
+  }
+
+  @Override
+  public Map<String, String> getRuntimeArguments() {
+    return new HashMap<>();
   }
 
   @Override

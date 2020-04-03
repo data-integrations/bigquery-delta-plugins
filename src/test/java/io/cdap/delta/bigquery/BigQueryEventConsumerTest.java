@@ -119,7 +119,7 @@ public class BigQueryEventConsumerTest {
     Bucket bucket = storage.create(BucketInfo.of(bucketName));
 
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(NoOpContext.INSTANCE, storage, bigQuery,
-                                                                    bucket, project, 100, 0, "_staging_");
+                                                                    bucket, project, 100, 0, "_staging_", null);
 
     String dataset = "testInsertUpdateDelete";
     try {

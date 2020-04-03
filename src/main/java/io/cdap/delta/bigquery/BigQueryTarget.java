@@ -69,6 +69,7 @@ public class BigQueryTarget implements DeltaTarget {
   public EventConsumer createConsumer(DeltaTargetContext context) throws IOException {
     Credentials credentials = conf.getCredentials();
     String project = conf.getProject();
+    String cmekKey = context.getRuntimeArguments().get("gcp.cmek.key.name");
 
     BigQuery bigQuery = BigQueryOptions.newBuilder()
       .setCredentials(credentials)
@@ -86,7 +87,11 @@ public class BigQueryTarget implements DeltaTarget {
     if (bucket == null) {
       try {
         // TODO: make bucket location configurable
-        bucket = storage.create(BucketInfo.newBuilder(conf.stagingBucket).build());
+        BucketInfo.Builder builder = BucketInfo.newBuilder(conf.stagingBucket);
+        if (cmekKey != null) {
+          builder.setDefaultKmsKeyName(cmekKey);
+        }
+        bucket = storage.create(builder.build());
       } catch (StorageException e) {
         throw new IOException(
           String.format("Unable to create staging bucket '%s' in project '%s'. "
@@ -96,7 +101,7 @@ public class BigQueryTarget implements DeltaTarget {
     }
 
     return new BigQueryEventConsumer(context, storage, bigQuery, bucket, project, conf.getMaxBatchChanges(),
-                                     conf.getMaxBatchSeconds(), conf.getStagingTablePrefix());
+                                     conf.getMaxBatchSeconds(), conf.getStagingTablePrefix(), cmekKey);
   }
 
   @Override
