@@ -21,6 +21,7 @@ import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.ServiceOptions;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryOptions;
+import com.google.cloud.bigquery.EncryptionConfiguration;
 import com.google.cloud.storage.Bucket;
 import com.google.cloud.storage.BucketInfo;
 import com.google.cloud.storage.Storage;
@@ -70,6 +71,8 @@ public class BigQueryTarget implements DeltaTarget {
     Credentials credentials = conf.getCredentials();
     String project = conf.getProject();
     String cmekKey = context.getRuntimeArguments().get("gcp.cmek.key.name");
+    EncryptionConfiguration encryptionConfig = cmekKey == null ? null :
+      EncryptionConfiguration.newBuilder().setKmsKeyName(cmekKey).build();
 
     BigQuery bigQuery = BigQueryOptions.newBuilder()
       .setCredentials(credentials)
@@ -101,7 +104,7 @@ public class BigQueryTarget implements DeltaTarget {
     }
 
     return new BigQueryEventConsumer(context, storage, bigQuery, bucket, project, conf.getMaxBatchChanges(),
-                                     conf.getMaxBatchSeconds(), conf.getStagingTablePrefix(), cmekKey);
+                                     conf.getMaxBatchSeconds(), conf.getStagingTablePrefix(), encryptionConfig);
   }
 
   @Override

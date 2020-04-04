@@ -164,7 +164,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final MultiGCSWriter gcsWriter;
   private final Bucket bucket;
   private final String project;
-  private final String cmekKey;
+  private final EncryptionConfiguration encryptionConfig;
   private final RetryPolicy<Object> commitRetryPolicy;
   private final Map<TableId, Long> latestSeenSequence;
   private final Map<TableId, Long> latestMergedSequence;
@@ -182,7 +182,7 @@ public class BigQueryEventConsumer implements EventConsumer {
 
   BigQueryEventConsumer(DeltaTargetContext context, Storage storage, BigQuery bigQuery, Bucket bucket,
                         String project, int batchMaxRows, int batchMaxSecondsElapsed, String stagingTablePrefix,
-                        @Nullable String cmekKey) {
+                        @Nullable EncryptionConfiguration encryptionConfig) {
     this.context = context;
     this.bigQuery = bigQuery;
     this.batchMaxRows = batchMaxRows;
@@ -193,11 +193,11 @@ public class BigQueryEventConsumer implements EventConsumer {
                                         context);
     this.bucket = bucket;
     this.project = project;
-    this.cmekKey = cmekKey;
     this.currentBatchSize = 0;
     this.executorService = Executors.newSingleThreadScheduledExecutor();
     this.latestSequenceNum = 0L;
     this.lastFlushTime = 0L;
+    this.encryptionConfig = encryptionConfig;
     // these maps are only accessed in synchronized methods so they do not need to be thread safe.
     this.latestMergedSequence = new HashMap<>();
     this.latestSeenSequence = new HashMap<>();
@@ -283,9 +283,8 @@ public class BigQueryEventConsumer implements EventConsumer {
                            Bytes.toBytes(GSON.toJson(new BigQueryTableState(primaryKeys))));
 
           TableInfo.Builder builder = TableInfo.newBuilder(tableId, tableDefinition);
-          if (cmekKey != null) {
-            builder.setEncryptionConfiguration(
-              EncryptionConfiguration.newBuilder().setKmsKeyName(cmekKey).build());
+          if (encryptionConfig != null) {
+            builder.setEncryptionConfiguration(encryptionConfig);
           }
           TableInfo tableInfo = builder.build();
           bigQuery.create(tableInfo);
@@ -312,9 +311,8 @@ public class BigQueryEventConsumer implements EventConsumer {
           .setSchema(Schemas.convert(addSequenceNumber(event.getSchema())))
           .build();
         TableInfo.Builder builder = TableInfo.newBuilder(tableId, tableDefinition);
-        if (cmekKey != null) {
-          builder.setEncryptionConfiguration(
-            EncryptionConfiguration.newBuilder().setKmsKeyName(cmekKey).build());
+        if (encryptionConfig != null) {
+          builder.setEncryptionConfiguration(encryptionConfig);
         }
         TableInfo tableInfo = builder.build();
         if (table == null) {
@@ -472,9 +470,8 @@ public class BigQueryEventConsumer implements EventConsumer {
         .setSchema(Schemas.convert(blob.getStagingSchema()))
         .build();
       TableInfo.Builder builder = TableInfo.newBuilder(stagingTableId, tableDefinition);
-      if (cmekKey != null) {
-        builder.setEncryptionConfiguration(
-          EncryptionConfiguration.newBuilder().setKmsKeyName(cmekKey).build());
+      if (encryptionConfig != null) {
+        builder.setEncryptionConfiguration(encryptionConfig);
       }
       TableInfo tableInfo = builder.build();
       bigQuery.create(tableInfo);
@@ -492,9 +489,8 @@ public class BigQueryEventConsumer implements EventConsumer {
     String uri = String.format("gs://%s/%s", blobId.getBucket(), blobId.getName());
     LoadJobConfiguration.Builder jobConfigBuilder = LoadJobConfiguration.newBuilder(stagingTableId, uri)
       .setFormatOptions(FormatOptions.avro());
-    if (cmekKey != null) {
-      jobConfigBuilder.setDestinationEncryptionConfiguration(
-        EncryptionConfiguration.newBuilder().setKmsKeyName(cmekKey).build());
+    if (encryptionConfig != null) {
+      jobConfigBuilder.setDestinationEncryptionConfiguration(encryptionConfig);
     }
     LoadJobConfiguration loadJobConf = jobConfigBuilder.build();
     JobInfo jobInfo = JobInfo.newBuilder(loadJobConf)
@@ -632,9 +628,8 @@ public class BigQueryEventConsumer implements EventConsumer {
         .stream().map(Schema.Field::getName)
         .collect(Collectors.joining(", ")) + ")";
     QueryJobConfiguration.Builder jobConfigBuilder = QueryJobConfiguration.newBuilder(query);
-    if (cmekKey != null) {
-      jobConfigBuilder.setDestinationEncryptionConfiguration(
-        EncryptionConfiguration.newBuilder().setKmsKeyName(cmekKey).build());
+    if (encryptionConfig != null) {
+      jobConfigBuilder.setDestinationEncryptionConfiguration(encryptionConfig);
     }
     QueryJobConfiguration mergeJobConf = jobConfigBuilder.build();
     // job id will be different even after a retry because batchid is the timestamp when the first
@@ -706,9 +701,8 @@ public class BigQueryEventConsumer implements EventConsumer {
 
         String query = String.format("SELECT MAX(_sequence_num) FROM %s.%s", tableId.getDataset(), tableId.getTable());
         QueryJobConfiguration.Builder jobConfigBuilder = QueryJobConfiguration.newBuilder(query);
-        if (cmekKey != null) {
-          jobConfigBuilder.setDestinationEncryptionConfiguration(
-            EncryptionConfiguration.newBuilder().setKmsKeyName(cmekKey).build());
+        if (encryptionConfig != null) {
+          jobConfigBuilder.setDestinationEncryptionConfiguration(encryptionConfig);
         }
         QueryJobConfiguration jobConfig = jobConfigBuilder.build();
         JobId jobId = JobId.of(UUID.randomUUID().toString());
