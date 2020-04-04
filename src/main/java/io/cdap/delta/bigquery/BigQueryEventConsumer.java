@@ -19,6 +19,7 @@ package io.cdap.delta.bigquery;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.DatasetId;
 import com.google.cloud.bigquery.DatasetInfo;
+import com.google.cloud.bigquery.EncryptionConfiguration;
 import com.google.cloud.bigquery.FieldValue;
 import com.google.cloud.bigquery.FieldValueList;
 import com.google.cloud.bigquery.FormatOptions;
@@ -71,6 +72,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
+import javax.annotation.Nullable;
 
 /**
  * Consumes change events and applies them to BigQuery.
@@ -162,6 +164,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final MultiGCSWriter gcsWriter;
   private final Bucket bucket;
   private final String project;
+  private final EncryptionConfiguration encryptionConfig;
   private final RetryPolicy<Object> commitRetryPolicy;
   private final Map<TableId, Long> latestSeenSequence;
   private final Map<TableId, Long> latestMergedSequence;
@@ -178,7 +181,8 @@ public class BigQueryEventConsumer implements EventConsumer {
   // Without keeping the entire batch in memory, there would be no way to recover the records that failed to write
 
   BigQueryEventConsumer(DeltaTargetContext context, Storage storage, BigQuery bigQuery, Bucket bucket,
-                        String project, int batchMaxRows, int batchMaxSecondsElapsed, String stagingTablePrefix) {
+                        String project, int batchMaxRows, int batchMaxSecondsElapsed, String stagingTablePrefix,
+                        @Nullable EncryptionConfiguration encryptionConfig) {
     this.context = context;
     this.bigQuery = bigQuery;
     this.batchMaxRows = batchMaxRows;
@@ -193,6 +197,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     this.executorService = Executors.newSingleThreadScheduledExecutor();
     this.latestSequenceNum = 0L;
     this.lastFlushTime = 0L;
+    this.encryptionConfig = encryptionConfig;
     // these maps are only accessed in synchronized methods so they do not need to be thread safe.
     this.latestMergedSequence = new HashMap<>();
     this.latestSeenSequence = new HashMap<>();
@@ -276,7 +281,12 @@ public class BigQueryEventConsumer implements EventConsumer {
           primaryKeyStore.put(tableId, primaryKeys);
           context.putState(String.format("bigquery-%s-%s", tableId.getDataset(), tableId.getTable()),
                            Bytes.toBytes(GSON.toJson(new BigQueryTableState(primaryKeys))));
-          TableInfo tableInfo = TableInfo.newBuilder(tableId, tableDefinition).build();
+
+          TableInfo.Builder builder = TableInfo.newBuilder(tableId, tableDefinition);
+          if (encryptionConfig != null) {
+            builder.setEncryptionConfiguration(encryptionConfig);
+          }
+          TableInfo tableInfo = builder.build();
           bigQuery.create(tableInfo);
         }
         break;
@@ -300,7 +310,11 @@ public class BigQueryEventConsumer implements EventConsumer {
         TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
           .setSchema(Schemas.convert(addSequenceNumber(event.getSchema())))
           .build();
-        TableInfo tableInfo = TableInfo.newBuilder(tableId, tableDefinition).build();
+        TableInfo.Builder builder = TableInfo.newBuilder(tableId, tableDefinition);
+        if (encryptionConfig != null) {
+          builder.setEncryptionConfiguration(encryptionConfig);
+        }
+        TableInfo tableInfo = builder.build();
         if (table == null) {
           bigQuery.create(tableInfo);
         } else {
@@ -455,8 +469,11 @@ public class BigQueryEventConsumer implements EventConsumer {
         .setLocation(bucket.getLocation())
         .setSchema(Schemas.convert(blob.getStagingSchema()))
         .build();
-      TableInfo tableInfo = TableInfo.newBuilder(stagingTableId, tableDefinition)
-        .build();
+      TableInfo.Builder builder = TableInfo.newBuilder(stagingTableId, tableDefinition);
+      if (encryptionConfig != null) {
+        builder.setEncryptionConfiguration(encryptionConfig);
+      }
+      TableInfo tableInfo = builder.build();
       bigQuery.create(tableInfo);
     }
 
@@ -470,9 +487,12 @@ public class BigQueryEventConsumer implements EventConsumer {
       .build();
     BlobId blobId = blob.getBlob().getBlobId();
     String uri = String.format("gs://%s/%s", blobId.getBucket(), blobId.getName());
-    LoadJobConfiguration loadJobConf = LoadJobConfiguration.newBuilder(stagingTableId, uri)
-      .setFormatOptions(FormatOptions.avro())
-      .build();
+    LoadJobConfiguration.Builder jobConfigBuilder = LoadJobConfiguration.newBuilder(stagingTableId, uri)
+      .setFormatOptions(FormatOptions.avro());
+    if (encryptionConfig != null) {
+      jobConfigBuilder.setDestinationEncryptionConfiguration(encryptionConfig);
+    }
+    LoadJobConfiguration loadJobConf = jobConfigBuilder.build();
     JobInfo jobInfo = JobInfo.newBuilder(loadJobConf)
       .setJobId(jobId)
       .build();
@@ -607,7 +627,11 @@ public class BigQueryEventConsumer implements EventConsumer {
       blob.getTargetSchema().getFields()
         .stream().map(Schema.Field::getName)
         .collect(Collectors.joining(", ")) + ")";
-    QueryJobConfiguration mergeJobConf = QueryJobConfiguration.newBuilder(query).build();
+    QueryJobConfiguration.Builder jobConfigBuilder = QueryJobConfiguration.newBuilder(query);
+    if (encryptionConfig != null) {
+      jobConfigBuilder.setDestinationEncryptionConfiguration(encryptionConfig);
+    }
+    QueryJobConfiguration mergeJobConf = jobConfigBuilder.build();
     // job id will be different even after a retry because batchid is the timestamp when the first
     // event in the batch was seen
     JobId jobId = JobId.newBuilder()
@@ -676,7 +700,11 @@ public class BigQueryEventConsumer implements EventConsumer {
         }
 
         String query = String.format("SELECT MAX(_sequence_num) FROM %s.%s", tableId.getDataset(), tableId.getTable());
-        QueryJobConfiguration jobConfig = QueryJobConfiguration.of(query);
+        QueryJobConfiguration.Builder jobConfigBuilder = QueryJobConfiguration.newBuilder(query);
+        if (encryptionConfig != null) {
+          jobConfigBuilder.setDestinationEncryptionConfiguration(encryptionConfig);
+        }
+        QueryJobConfiguration jobConfig = jobConfigBuilder.build();
         JobId jobId = JobId.of(UUID.randomUUID().toString());
         Job queryJob = bigQuery.create(JobInfo.newBuilder(jobConfig).setJobId(jobId).build());
         queryJob.waitFor();
