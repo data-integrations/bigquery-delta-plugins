@@ -249,6 +249,8 @@ public class BigQueryEventConsumer implements EventConsumer {
     DDLEvent event = sequencedEvent.getEvent();
     String normalizedDatabaseName = normalize(event.getDatabase());
     String normalizedTableName = normalize(event.getTable());
+    String normalizedStagingTableName = normalizedTableName == null ? null :
+      normalize(stagingTablePrefix + normalizedTableName);
     switch (event.getOperation()) {
       case CREATE_DATABASE:
         DatasetId datasetId = DatasetId.of(project, normalizedDatabaseName);
@@ -299,6 +301,11 @@ public class BigQueryEventConsumer implements EventConsumer {
         table = bigQuery.getTable(tableId);
         if (table != null) {
           bigQuery.delete(tableId);
+        }
+        TableId stagingTableId = TableId.of(project, normalizedDatabaseName, normalizedStagingTableName);
+        Table stagingTable = bigQuery.getTable(stagingTableId);
+        if (stagingTable != null) {
+          bigQuery.delete(stagingTableId);
         }
         break;
       case ALTER_TABLE:
