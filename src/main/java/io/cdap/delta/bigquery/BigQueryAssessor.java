@@ -65,7 +65,7 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
       problems.add(
         new Problem("Missing Primary Key",
                     String.format("Table '%s' in database '%s' must have a primary key in order to be replicated",
-                                  dbName, tableName),
+                                  tableName, dbName),
                     "Please alter the table to use a primary key, or select a different table",
                     "Not able to replicate this table in BigQuery side"));
     }
