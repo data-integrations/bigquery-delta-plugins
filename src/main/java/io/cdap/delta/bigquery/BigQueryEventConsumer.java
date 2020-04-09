@@ -334,7 +334,22 @@ public class BigQueryEventConsumer implements EventConsumer {
         //  in primaryKeyStore, put new entry in primaryKeyStore
         break;
       case TRUNCATE_TABLE:
-        // TODO: flush changes then run a DELETE from table WHERE 1=1 query
+        flush();
+        String query = "DELETE from " + normalizedDatabaseName + "." + normalizedTableName + " WHERE 1=1";
+        QueryJobConfiguration.Builder jobConfigBuilder = QueryJobConfiguration.newBuilder(query);
+        if (encryptionConfig != null) {
+          jobConfigBuilder.setDestinationEncryptionConfiguration(encryptionConfig);
+        }
+        QueryJobConfiguration truncateJobConf = jobConfigBuilder.build();
+        JobId jobId = JobId.newBuilder()
+          .setLocation(bucket.getLocation())
+          .setJob(UUID.randomUUID().toString())
+          .build();
+        JobInfo jobInfo = JobInfo.newBuilder(truncateJobConf)
+          .setJobId(jobId)
+          .build();
+        Job truncateJob = bigQuery.create(jobInfo);
+        truncateJob.waitFor();
         break;
     }
     latestOffset = event.getOffset();
