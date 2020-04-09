@@ -59,8 +59,10 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
@@ -133,46 +135,51 @@ public class BigQueryEventConsumerTest {
       if (ds != null) {
         ds.delete(BigQuery.DatasetDeleteOption.deleteContents());
       }
+      eventConsumer.stop();
     }
   }
 
   private void insertUpdateDelete(BigQueryEventConsumer eventConsumer, String dataset) throws Exception {
+    long sequenceNum = 1L;
     // test creation of dataset
     DDLEvent createDatabase = DDLEvent.builder()
       .setOperation(DDLOperation.CREATE_DATABASE)
       .setDatabase(dataset)
       .build();
 
-    eventConsumer.applyDDL(new Sequenced<>(createDatabase, 1L));
+    eventConsumer.applyDDL(new Sequenced<>(createDatabase, sequenceNum++));
     Dataset ds = bigQuery.getDataset(dataset);
     Assert.assertNotNull(ds);
 
-    // test creation of table
-    String tableName = "users";
     Schema schema = Schema.recordOf("user",
                                     Schema.Field.of("id", Schema.of(Schema.Type.INT)),
                                     Schema.Field.of("name", Schema.of(Schema.Type.STRING)),
                                     Schema.Field.of("created", Schema.of(Schema.LogicalType.TIMESTAMP_MILLIS)),
                                     Schema.Field.of("bday", Schema.of(Schema.LogicalType.DATE)),
                                     Schema.Field.of("score", Schema.nullableOf(Schema.of(Schema.Type.DOUBLE))));
-    DDLEvent createEvent = DDLEvent.builder()
-      .setOperation(DDLOperation.CREATE_TABLE)
-      .setDatabase(dataset)
-      .setTable(tableName)
-      .setSchema(schema)
-      .setPrimaryKey(Collections.singletonList("id"))
-      .build();
-    eventConsumer.applyDDL(new Sequenced<>(createEvent, 2L));
 
-    Table table = bigQuery.getTable(TableId.of(dataset, tableName));
-    Assert.assertNotNull(table);
-    TableDefinition tableDefinition = table.getDefinition();
-    FieldList bqFields = tableDefinition.getSchema().getFields();
-    Assert.assertEquals(LegacySQLTypeName.INTEGER, bqFields.get("id").getType());
-    Assert.assertEquals(LegacySQLTypeName.STRING, bqFields.get("name").getType());
-    Assert.assertEquals(LegacySQLTypeName.TIMESTAMP, bqFields.get("created").getType());
-    Assert.assertEquals(LegacySQLTypeName.DATE, bqFields.get("bday").getType());
-    Assert.assertEquals(LegacySQLTypeName.FLOAT, bqFields.get("score").getType());
+    // test creation of tables
+    List<String> tableNames = Arrays.asList("users1", "users2", "users3");
+    for (String tableName : tableNames) {
+      DDLEvent createEvent = DDLEvent.builder()
+        .setOperation(DDLOperation.CREATE_TABLE)
+        .setDatabase(dataset)
+        .setTable(tableName)
+        .setSchema(schema)
+        .setPrimaryKey(Collections.singletonList("id"))
+        .build();
+      eventConsumer.applyDDL(new Sequenced<>(createEvent, sequenceNum++));
+
+      Table table = bigQuery.getTable(TableId.of(dataset, tableName));
+      Assert.assertNotNull(table);
+      TableDefinition tableDefinition = table.getDefinition();
+      FieldList bqFields = tableDefinition.getSchema().getFields();
+      Assert.assertEquals(LegacySQLTypeName.INTEGER, bqFields.get("id").getType());
+      Assert.assertEquals(LegacySQLTypeName.STRING, bqFields.get("name").getType());
+      Assert.assertEquals(LegacySQLTypeName.TIMESTAMP, bqFields.get("created").getType());
+      Assert.assertEquals(LegacySQLTypeName.DATE, bqFields.get("bday").getType());
+      Assert.assertEquals(LegacySQLTypeName.FLOAT, bqFields.get("score").getType());
+    }
 
     /*
         send events:
@@ -191,16 +198,18 @@ public class BigQueryEventConsumerTest {
       .setDate("bday", LocalDate.ofEpochDay(0))
       .set("score", 0.0d)
       .build();
-    DMLEvent insert1Event = DMLEvent.builder()
-      .setOperation(DMLOperation.INSERT)
-      .setIngestTimestamp(0L)
-      .setSnapshot(false)
-      .setDatabase(dataset)
-      .setTable(tableName)
-      .setRow(insert1)
-      .setOffset(new Offset())
-      .build();
-    eventConsumer.applyDML(new Sequenced<>(insert1Event, 3L));
+    for (String tableName : tableNames) {
+      DMLEvent insert1Event = DMLEvent.builder()
+        .setOperation(DMLOperation.INSERT)
+        .setIngestTimestamp(0L)
+        .setSnapshot(false)
+        .setDatabase(dataset)
+        .setTable(tableName)
+        .setRow(insert1)
+        .setOffset(new Offset())
+        .build();
+      eventConsumer.applyDML(new Sequenced<>(insert1Event, sequenceNum++));
+    }
 
     StructuredRecord insert2 = StructuredRecord.builder(schema)
       .set("id", 1)
@@ -209,36 +218,40 @@ public class BigQueryEventConsumerTest {
       .setDate("bday", LocalDate.ofEpochDay(1))
       .set("score", 1.0d)
       .build();
-    DMLEvent insert2Event = DMLEvent.builder()
-      .setOperation(DMLOperation.INSERT)
-      .setIngestTimestamp(1L)
-      .setSnapshot(false)
-      .setDatabase(dataset)
-      .setTable(tableName)
-      .setRow(insert2)
-      .setOffset(new Offset())
-      .build();
-    eventConsumer.applyDML(new Sequenced<>(insert2Event, 4L));
+    for (String tableName : tableNames) {
+      DMLEvent insert2Event = DMLEvent.builder()
+        .setOperation(DMLOperation.INSERT)
+        .setIngestTimestamp(1L)
+        .setSnapshot(false)
+        .setDatabase(dataset)
+        .setTable(tableName)
+        .setRow(insert2)
+        .setOffset(new Offset())
+        .build();
+      eventConsumer.applyDML(new Sequenced<>(insert2Event, sequenceNum++));
+    }
     eventConsumer.flush();
 
-    // should have 2 rows:
-    // <0, 'alice', 0L, 1970-01-01, 0.0>
-    // <1, 'bob', 86400L, 1970-01-02, 1.0>
-    TableResult result = executeQuery(String.format("SELECT * from %s.%s ORDER BY id", dataset, tableName));
-    Assert.assertEquals(2, result.getTotalRows());
-    Iterator<FieldValueList> iter = result.iterateAll().iterator();
-    FieldValueList row = iter.next();
-    Assert.assertEquals(0L, row.get("id").getLongValue());
-    Assert.assertEquals("alice", row.get("name").getStringValue());
-    Assert.assertEquals(0L, row.get("created").getTimestampValue());
-    Assert.assertEquals("1970-01-01", row.get("bday").getStringValue());
-    Assert.assertEquals(0.0d, row.get("score").getDoubleValue(), 0.000001d);
-    row = iter.next();
-    Assert.assertEquals(1L, row.get("id").getLongValue());
-    Assert.assertEquals("bob", row.get("name").getStringValue());
-    Assert.assertEquals(TimeUnit.SECONDS.toMicros(86400), row.get("created").getTimestampValue());
-    Assert.assertEquals("1970-01-02", row.get("bday").getStringValue());
-    Assert.assertEquals(1.0d, row.get("score").getDoubleValue(), 0.000001d);
+    for (String tableName : tableNames) {
+      // should have 2 rows:
+      // <0, 'alice', 0L, 1970-01-01, 0.0>
+      // <1, 'bob', 86400L, 1970-01-02, 1.0>
+      TableResult result = executeQuery(String.format("SELECT * from %s.%s ORDER BY id", dataset, tableName));
+      Assert.assertEquals(2, result.getTotalRows());
+      Iterator<FieldValueList> iter = result.iterateAll().iterator();
+      FieldValueList row = iter.next();
+      Assert.assertEquals(0L, row.get("id").getLongValue());
+      Assert.assertEquals("alice", row.get("name").getStringValue());
+      Assert.assertEquals(0L, row.get("created").getTimestampValue());
+      Assert.assertEquals("1970-01-01", row.get("bday").getStringValue());
+      Assert.assertEquals(0.0d, row.get("score").getDoubleValue(), 0.000001d);
+      row = iter.next();
+      Assert.assertEquals(1L, row.get("id").getLongValue());
+      Assert.assertEquals("bob", row.get("name").getStringValue());
+      Assert.assertEquals(TimeUnit.SECONDS.toMicros(86400), row.get("created").getTimestampValue());
+      Assert.assertEquals("1970-01-02", row.get("bday").getStringValue());
+      Assert.assertEquals(1.0d, row.get("score").getDoubleValue(), 0.000001d);
+    }
 
     StructuredRecord update = StructuredRecord.builder(schema)
       .set("id", 2)
@@ -247,39 +260,43 @@ public class BigQueryEventConsumerTest {
       .setDate("bday", insert1.getDate("bday"))
       .set("score", insert1.get("score"))
       .build();
-    DMLEvent updateEvent = DMLEvent.builder()
-      .setOperation(DMLOperation.UPDATE)
-      .setIngestTimestamp(2L)
-      .setSnapshot(false)
-      .setDatabase(dataset)
-      .setTable(tableName)
-      .setPreviousRow(insert1)
-      .setRow(update)
-      .setOffset(new Offset())
-      .build();
-    eventConsumer.applyDML(new Sequenced<>(updateEvent, 5L));
+    for (String tableName : tableNames) {
+      DMLEvent updateEvent = DMLEvent.builder()
+        .setOperation(DMLOperation.UPDATE)
+        .setIngestTimestamp(2L)
+        .setSnapshot(false)
+        .setDatabase(dataset)
+        .setTable(tableName)
+        .setPreviousRow(insert1)
+        .setRow(update)
+        .setOffset(new Offset())
+        .build();
+      eventConsumer.applyDML(new Sequenced<>(updateEvent, sequenceNum++));
 
-    DMLEvent deleteEvent = DMLEvent.builder()
-      .setOperation(DMLOperation.DELETE)
-      .setIngestTimestamp(3L)
-      .setSnapshot(false)
-      .setDatabase(dataset)
-      .setTable(tableName)
-      .setRow(insert2)
-      .setOffset(new Offset())
-      .build();
-    eventConsumer.applyDML(new Sequenced<>(deleteEvent, 6L));
+      DMLEvent deleteEvent = DMLEvent.builder()
+        .setOperation(DMLOperation.DELETE)
+        .setIngestTimestamp(3L)
+        .setSnapshot(false)
+        .setDatabase(dataset)
+        .setTable(tableName)
+        .setRow(insert2)
+        .setOffset(new Offset())
+        .build();
+      eventConsumer.applyDML(new Sequenced<>(deleteEvent, sequenceNum++));
+    }
     eventConsumer.flush();
 
-    // should have just one row: 0, 'Alice', 1000L, 1970-01-01, 0.0
-    result = executeQuery(String.format("SELECT * from %s.%s", dataset, tableName));
-    Assert.assertEquals(1L, result.getTotalRows());
-    row = result.iterateAll().iterator().next();
-    Assert.assertEquals(2L, row.get("id").getLongValue());
-    Assert.assertEquals("alice", row.get("name").getStringValue());
-    Assert.assertEquals(0L, row.get("created").getTimestampValue());
-    Assert.assertEquals("1970-01-01", row.get("bday").getStringValue());
-    Assert.assertEquals(0.0d, row.get("score").getDoubleValue(), 0.000001d);
+    for (String tableName : tableNames) {
+      // should have just one row: 0, 'Alice', 1000L, 1970-01-01, 0.0
+      TableResult result = executeQuery(String.format("SELECT * from %s.%s", dataset, tableName));
+      Assert.assertEquals(1L, result.getTotalRows());
+      FieldValueList row = result.iterateAll().iterator().next();
+      Assert.assertEquals(2L, row.get("id").getLongValue());
+      Assert.assertEquals("alice", row.get("name").getStringValue());
+      Assert.assertEquals(0L, row.get("created").getTimestampValue());
+      Assert.assertEquals("1970-01-01", row.get("bday").getStringValue());
+      Assert.assertEquals(0.0d, row.get("score").getDoubleValue(), 0.000001d);
+    }
   }
 
   private TableResult executeQuery(String query) throws InterruptedException {
