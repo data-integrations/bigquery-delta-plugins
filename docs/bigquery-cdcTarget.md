@@ -41,7 +41,7 @@ Tables must have a primary key in order to be replicated.
 
 Table rename operations are not supported. If a rename event is encountered, it will be ignored.
 
-Table alters are partially supported. An existing non-nullable column can be altered into nullable columns.
+Table alters are partially supported. An existing non-nullable column can be altered into a nullable column.
 New nullable columns can be added to an existing table. Any other type of alteration to the table schema
 will fail. Changes to the primary key will not fail, but existing data will not rewritten to obey uniqueness
 on the new primary key.
