@@ -36,19 +36,11 @@
       "label" : "Advanced",
       "properties" : [
         {
-          "name": "maxBatchSeconds",
-          "label": "Max Batch Seconds",
+          "name": "loadInterval",
+          "label": "Load Interval (seconds)",
           "widget-type": "textbox",
           "widget-attributes": {
-            "default": "30"
-          }
-        },
-        {
-          "name": "maxBatchChanges",
-          "label": "Max Batch Changes",
-          "widget-type": "textbox",
-          "widget-attributes": {
-            "default": "10000"
+            "default": "90"
           }
         },
         {

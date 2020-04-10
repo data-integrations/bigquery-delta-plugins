@@ -11,6 +11,18 @@ The final target tables will include all the original columns from the source ta
 _sequence_num column. The sequence number is used to ensure that data is not duplicated or missed in
 replicator failure scenarios.
 
+Quotas
+------
+BigQuery has a quota of 1,000 operations per table per day, and 100,000 operations per project per day.
+Every load interval, for each target table, this plugin will perform one operation.
+With the default value of 90 seconds, this results in 960 merge jobs for each target table.
+This means if there are no other processes loading data into BigQuery for your project,
+you are limited to replicating 104 tables per day.
+If you would like to replicate more tables, or you have additional processes loading data, you will
+need to increase the load interval accordingly.
+
+See https://cloud.google.com/bigquery/quotas for more information about BigQuery quotas.
+
 Credentials
 -----------
 If the plugin is run on a Google Cloud Dataproc cluster, the service account key does not need to be
@@ -22,6 +34,12 @@ The service account key can be found on the Dashboard in the Cloud Platform Cons
 Make sure the account key has permission to access BigQuery.
 The service account key file needs to be available on every node in your cluster and
 must be readable by all users running the job.
+
+Limitations
+-----------
+Tables must have a primary key in order to be replicated.
+
+Table rename operations are not supported. If a rename event is encountered, it will be ignored.
 
 Properties
 ----------
@@ -37,9 +55,10 @@ BigQuery dataset.
 BigQuery. When running on a Dataproc cluster, this can be left blank, which will use the service account
 of the cluster.
 
-**Max Batch Seconds**: Maximum number of seconds to wait before merging a batch of changes.
-
-**Max Batch Changes**: Maximum number of change events to include in a single batch.
+**Load Interval**: Number of seconds to wait before loading a batch of data into BigQuery. 
+Note that BigQuery has a quota of 1000 load jobs per table, so it is not safe to set this to a value lower
+than 90 seconds, unless you are certain that there are periods of the day where there will be no
+updates made to the table.
 
 **Staging Table Prefix**: Changes are first written to a staging table before merged to the final table.
 Staging tables are named used this prefix prepended to the target table name.

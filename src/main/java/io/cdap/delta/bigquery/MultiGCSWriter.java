@@ -84,8 +84,8 @@ public class MultiGCSWriter {
       try {
         tableObject.close();
       } catch (IOException e) {
-        String errMsg = String.format("Error writing batch of changes for %s.%s to GCS",
-                                      tableObject.dataset, tableObject.table);
+        String errMsg = String.format("Error writing batch of %d changes for %s.%s to GCS",
+                                      tableObject.numEvents, tableObject.dataset, tableObject.table);
         LOG.error(errMsg, e);
         context.setTableError(tableObject.dataset, tableObject.table, new ReplicationError(errMsg, e.getStackTrace()));
         if (error == null) {
@@ -96,7 +96,7 @@ public class MultiGCSWriter {
       }
       Blob blob = storage.get(tableObject.blobId);
       writtenObjects.add(new TableBlob(tableObject.dataset, tableObject.table, tableObject.targetSchema,
-                                       tableObject.stagingSchema, tableObject.batchId, blob));
+                                       tableObject.stagingSchema, tableObject.batchId, tableObject.numEvents, blob));
     }
     if (error != null) {
       throw error;
@@ -142,6 +142,7 @@ public class MultiGCSWriter {
     private final String dataset;
     private final String table;
     private final BlobId blobId;
+    private int numEvents;
     private Schema stagingSchema;
     private Schema targetSchema;
     private DataFileWriter<StructuredRecord> avroWriter;
@@ -149,6 +150,7 @@ public class MultiGCSWriter {
     private TableObject(String dataset, String table) {
       this.dataset = dataset;
       this.table = table;
+      this.numEvents = 0;
       batchId = System.currentTimeMillis();
       String objectName = String.format("%s%s/%s/%d", baseObjectName, dataset, table, batchId);
       blobId = BlobId.of(bucket, objectName);
@@ -171,6 +173,7 @@ public class MultiGCSWriter {
       }
 
       avroWriter.append(createStagingRecord(sequencedEvent));
+      numEvents++;
     }
 
     private void close() throws IOException {

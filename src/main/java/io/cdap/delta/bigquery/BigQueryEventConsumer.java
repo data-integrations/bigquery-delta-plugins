@@ -163,8 +163,7 @@ public class BigQueryEventConsumer implements EventConsumer {
 
   private final DeltaTargetContext context;
   private final BigQuery bigQuery;
-  private final int batchMaxRows;
-  private final int batchMaxSecondsElapsed;
+  private final int loadIntervalSeconds;
   private final String stagingTablePrefix;
   private final MultiGCSWriter gcsWriter;
   private final Bucket bucket;
@@ -178,31 +177,26 @@ public class BigQueryEventConsumer implements EventConsumer {
   private ScheduledFuture<?> scheduledFlush;
   private ExecutorService mergeExecutorService;
   private Offset latestOffset;
-  private long lastFlushTime;
   private long latestSequenceNum;
-  private int currentBatchSize;
   private Exception flushException;
   // have to keep all the records in memory in case there is a failure writing to GCS
   // cannot write to a temporary file on local disk either in case there is a failure writing to disk
   // Without keeping the entire batch in memory, there would be no way to recover the records that failed to write
 
   BigQueryEventConsumer(DeltaTargetContext context, Storage storage, BigQuery bigQuery, Bucket bucket,
-                        String project, int batchMaxRows, int batchMaxSecondsElapsed, String stagingTablePrefix,
+                        String project, int loadIntervalSeconds, String stagingTablePrefix,
                         @Nullable EncryptionConfiguration encryptionConfig) {
     this.context = context;
     this.bigQuery = bigQuery;
-    this.batchMaxRows = batchMaxRows;
-    this.batchMaxSecondsElapsed = batchMaxSecondsElapsed;
+    this.loadIntervalSeconds = loadIntervalSeconds;
     this.stagingTablePrefix = stagingTablePrefix;
     this.gcsWriter = new MultiGCSWriter(storage, bucket.getName(),
                                         String.format("cdap/delta/%s/", context.getApplicationName()),
                                         context);
     this.bucket = bucket;
     this.project = project;
-    this.currentBatchSize = 0;
     this.executorService = Executors.newSingleThreadScheduledExecutor();
     this.latestSequenceNum = 0L;
-    this.lastFlushTime = 0L;
     this.encryptionConfig = encryptionConfig;
     // these maps are only accessed in synchronized methods so they do not need to be thread safe.
     this.latestMergedSequence = new HashMap<>();
@@ -232,7 +226,7 @@ public class BigQueryEventConsumer implements EventConsumer {
       } catch (Exception e) {
         flushException = e;
       }
-    }, batchMaxSecondsElapsed, batchMaxSecondsElapsed, TimeUnit.SECONDS);
+    }, loadIntervalSeconds, loadIntervalSeconds, TimeUnit.SECONDS);
   }
 
   @Override
@@ -424,11 +418,7 @@ public class BigQueryEventConsumer implements EventConsumer {
 
     latestOffset = event.getOffset();
     latestSequenceNum = sequenceNumber;
-    currentBatchSize++;
     context.incrementCount(event.getOperation());
-    if (currentBatchSize >= batchMaxRows) {
-      flush();
-    }
 
     if (event.isSnapshot()) {
       context.setTableSnapshotting(normalizedDatabaseName, normalizedTableName);
@@ -439,14 +429,6 @@ public class BigQueryEventConsumer implements EventConsumer {
 
   @VisibleForTesting
   synchronized void flush() throws InterruptedException, IOException, DeltaFailureException {
-    long now = System.currentTimeMillis();
-    // if there was a flush that recently happened because the max number of events per batch was reached,
-    // then skip the time based flush.
-    if (now - lastFlushTime < TimeUnit.SECONDS.toMillis(batchMaxSecondsElapsed)) {
-      return;
-    }
-    lastFlushTime = now;
-
     Collection<TableBlob> tableBlobs;
     // if this throws an IOException, we want to propagate it, since we need the app to reset state to the last
     // commit and replay events. This is because previous events are written directly to an outputstream to GCS
@@ -485,7 +467,6 @@ public class BigQueryEventConsumer implements EventConsumer {
       throw exception;
     }
 
-    currentBatchSize = 0;
     latestMergedSequence.clear();
     latestMergedSequence.putAll(latestSeenSequence);
     commitOffset();
@@ -522,7 +503,8 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   private void loadStagingTable(TableId stagingTableId, TableBlob blob, int attemptNumber) throws InterruptedException {
-    LOG.debug("Loading batch {} into staging table for {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
+    LOG.debug("Loading batch {} of {} events into staging table for {}.{}",
+              blob.getBatchId(), blob.getNumEvents(), blob.getDataset(), blob.getTable());
     Table stagingTable = bigQuery.getTable(stagingTableId);
     if (stagingTable == null) {
       TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
@@ -709,11 +691,7 @@ public class BigQueryEventConsumer implements EventConsumer {
 
   private void runWithRetries(ContextualRunnable runnable, TableBlob blob, String onFailedAttemptMessage,
                               String retriesExhaustedMessage) throws DeltaFailureException, InterruptedException {
-    RetryPolicy<Object> retryPolicy = new RetryPolicy<>()
-      .withMaxDuration(Duration.of(context.getMaxRetrySeconds(), ChronoUnit.SECONDS))
-      // maxDuration must be greater than the delay, otherwise Failsafe complains
-      .withBackoff(Math.min(61, context.getMaxRetrySeconds()) - 1, 120, ChronoUnit.SECONDS)
-      .withMaxAttempts(Integer.MAX_VALUE)
+    RetryPolicy<Object> retryPolicy = createBaseRetryPolicy()
       .onFailedAttempt(failureContext -> {
         Throwable t = failureContext.getLastFailure();
         LOG.error(onFailedAttemptMessage, t);
@@ -743,11 +721,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   private long getLatestSequenceNum(TableId tableId) throws InterruptedException, DeltaFailureException {
-    RetryPolicy<Object> retryPolicy = new RetryPolicy<>()
-      .withMaxDuration(Duration.of(context.getMaxRetrySeconds(), ChronoUnit.SECONDS))
-      // maxDuration must be greater than the delay, otherwise Failsafe complains
-      .withBackoff(Math.min(61, context.getMaxRetrySeconds()) - 1, 120, ChronoUnit.SECONDS)
-      .withMaxAttempts(Integer.MAX_VALUE)
+    RetryPolicy<Object> retryPolicy = createBaseRetryPolicy()
       .onFailedAttempt(failureContext -> {
         Throwable t = failureContext.getLastFailure();
         LOG.error("Failed to read maximum sequence number from {}.{}.", tableId.getDataset(), tableId.getTable(), t);
@@ -832,5 +806,17 @@ public class BigQueryEventConsumer implements EventConsumer {
       // should not happen unless mergeTables is changed without changing this.
       throw new RuntimeException(cause.getMessage(), cause);
     }
+  }
+
+  private <T> RetryPolicy<T> createBaseRetryPolicy() {
+    RetryPolicy<T> retryPolicy = new RetryPolicy<>();
+    if (context.getMaxRetrySeconds() < 1) {
+      return retryPolicy.withMaxAttempts(1);
+    }
+
+    long baseDelay = Math.min(91, context.getMaxRetrySeconds()) - 1;
+    long maxDelay = Math.max(baseDelay, loadIntervalSeconds);
+    return retryPolicy.withMaxAttempts(Integer.MAX_VALUE)
+      .withBackoff(baseDelay, maxDelay, ChronoUnit.SECONDS);
   }
 }

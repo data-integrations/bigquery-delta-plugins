@@ -98,7 +98,7 @@ public class NoOpContext implements DeltaTargetContext {
 
   @Override
   public int getMaxRetrySeconds() {
-    return 60;
+    return 0;
   }
 
   @Nullable
