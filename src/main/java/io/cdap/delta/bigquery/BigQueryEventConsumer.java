@@ -54,6 +54,7 @@ import net.jodah.failsafe.FailsafeException;
 import net.jodah.failsafe.RetryPolicy;
 import net.jodah.failsafe.TimeoutExceededException;
 import net.jodah.failsafe.function.ContextualRunnable;
+import org.apache.twill.common.Threads;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -67,7 +68,11 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -171,6 +176,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final Map<TableId, List<String>> primaryKeyStore;
   private ScheduledExecutorService executorService;
   private ScheduledFuture<?> scheduledFlush;
+  private ExecutorService mergeExecutorService;
   private Offset latestOffset;
   private long lastFlushTime;
   private long latestSequenceNum;
@@ -213,6 +219,7 @@ public class BigQueryEventConsumer implements EventConsumer {
                    failureContext.getLastFailure());
         }
       });
+    mergeExecutorService = Executors.newCachedThreadPool(Threads.createDaemonThreadFactory("bq-merge-%d"));
   }
 
   @Override
@@ -230,10 +237,14 @@ public class BigQueryEventConsumer implements EventConsumer {
 
   @Override
   public void stop() {
-    scheduledFlush.cancel(true);
+    if (scheduledFlush != null) {
+      scheduledFlush.cancel(true);
+    }
     executorService.shutdownNow();
+    mergeExecutorService.shutdownNow();
     try {
       executorService.awaitTermination(10, TimeUnit.SECONDS);
+      mergeExecutorService.awaitTermination(10, TimeUnit.SECONDS);
     } catch (InterruptedException e) {
       // just return and let everything end
     }
@@ -430,9 +441,31 @@ public class BigQueryEventConsumer implements EventConsumer {
       throw e;
     }
 
-    // TODO: do this in parallel and asynchronously
+    List<Future<?>> mergeFutures = new ArrayList<>(tableBlobs.size());
     for (TableBlob blob : tableBlobs) {
-      mergeTableChanges(blob);
+      // submit a callable instead of a runnable so that it can throw checked exceptions
+      mergeFutures.add(mergeExecutorService.submit((Callable<Void>) () -> {
+        mergeTableChanges(blob);
+        return null;
+      }));
+    }
+
+    DeltaFailureException exception = null;
+    for (Future mergeFuture : mergeFutures) {
+      try {
+        getMergeFuture(mergeFuture);
+      } catch (InterruptedException e) {
+        throw e;
+      } catch (DeltaFailureException e) {
+        if (exception != null) {
+          exception.addSuppressed(e);
+        } else {
+          exception = e;
+        }
+      }
+    }
+    if (exception != null) {
+      throw exception;
     }
 
     currentBatchSize = 0;
@@ -759,5 +792,25 @@ public class BigQueryEventConsumer implements EventConsumer {
       name = name.substring(0, MAX_LENGTH);
     }
     return name;
+  }
+
+  /**
+   * Utility method that unwraps ExecutionExceptions and propagates their cause as-is when possible.
+   * Expects to be given a Future for a call to mergeTableChanges.
+   */
+  private static <T> T getMergeFuture(Future<T> mergeFuture) throws InterruptedException, DeltaFailureException {
+    try {
+      return mergeFuture.get();
+    } catch (ExecutionException e) {
+      Throwable cause = e.getCause();
+      if (cause instanceof DeltaFailureException) {
+        throw (DeltaFailureException) cause;
+      }
+      if (cause instanceof InterruptedException) {
+        throw (InterruptedException) cause;
+      }
+      // should not happen unless mergeTables is changed without changing this.
+      throw new RuntimeException(cause.getMessage(), cause);
+    }
   }
 }
