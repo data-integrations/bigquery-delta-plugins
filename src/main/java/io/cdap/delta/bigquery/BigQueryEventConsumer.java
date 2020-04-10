@@ -826,7 +826,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
 
     long baseDelay = Math.min(91, context.getMaxRetrySeconds()) - 1;
-    long maxDelay = Math.max(baseDelay, loadIntervalSeconds);
+    long maxDelay = Math.max(baseDelay, 180);
     return retryPolicy.withMaxAttempts(Integer.MAX_VALUE)
       .withBackoff(baseDelay, maxDelay, ChronoUnit.SECONDS);
   }
