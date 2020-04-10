@@ -516,6 +516,9 @@ public class BigQueryEventConsumer implements EventConsumer {
       LOG.warn("Failed to delete temporary GCS object {} in bucket {}. The object will need to be manually deleted.",
                blob.getBlob().getBlobId().getName(), blob.getBlob().getBlobId().getBucket(), e);
     }
+    // clean up staging table after merging is done, there is no retry for this clean up since it will not affect
+    // future functionality
+    bigQuery.delete(stagingTableId);
   }
 
   private void loadStagingTable(TableId stagingTableId, TableBlob blob, int attemptNumber) throws InterruptedException {
