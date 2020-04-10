@@ -74,6 +74,8 @@ import java.util.concurrent.TimeUnit;
  * The tests create real resources in GCP and will cost some small amount of money for each run.
  */
 public class BigQueryEventConsumerTest {
+  private static final String STAGING_TABLE_PREFIX = "_staging_";
+
   private static Storage storage;
   private static BigQuery bigQuery;
   private static String project;
@@ -120,8 +122,8 @@ public class BigQueryEventConsumerTest {
     String bucketName = "bqtest-" + UUID.randomUUID().toString();
     Bucket bucket = storage.create(BucketInfo.of(bucketName));
 
-    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(NoOpContext.INSTANCE, storage, bigQuery,
-                                                                    bucket, project, 100, 0, "_staging_", null);
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(NoOpContext.INSTANCE, storage, bigQuery, bucket,
+                                                                    project, 100, 0, STAGING_TABLE_PREFIX, null);
 
     String dataset = "testInsertUpdateDelete";
     try {
@@ -144,8 +146,8 @@ public class BigQueryEventConsumerTest {
     String bucketName = "bqtest-" + UUID.randomUUID().toString();
     Bucket bucket = storage.create(BucketInfo.of(bucketName));
 
-    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(NoOpContext.INSTANCE, storage, bigQuery,
-                                                                    bucket, project, 100, 0, "_staging_", null);
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(NoOpContext.INSTANCE, storage, bigQuery, bucket,
+                                                                    project, 100, 0, STAGING_TABLE_PREFIX, null);
 
     String dataset = "testInsertTruncate";
     try {
@@ -244,6 +246,8 @@ public class BigQueryEventConsumerTest {
       Assert.assertEquals(TimeUnit.SECONDS.toMicros(86400), row.get("created").getTimestampValue());
       Assert.assertEquals("1970-01-02", row.get("bday").getStringValue());
       Assert.assertEquals(1.0d, row.get("score").getDoubleValue(), 0.000001d);
+      // staging table should be cleaned up
+      Assert.assertNull(bigQuery.getTable(TableId.of(dataset, STAGING_TABLE_PREFIX + tableName)));
     }
 
     StructuredRecord update = StructuredRecord.builder(schema)
@@ -289,6 +293,8 @@ public class BigQueryEventConsumerTest {
       Assert.assertEquals(0L, row.get("created").getTimestampValue());
       Assert.assertEquals("1970-01-01", row.get("bday").getStringValue());
       Assert.assertEquals(0.0d, row.get("score").getDoubleValue(), 0.000001d);
+      // staging table should be cleaned up
+      Assert.assertNull(bigQuery.getTable(TableId.of(dataset, STAGING_TABLE_PREFIX + tableName)));
     }
   }
 
@@ -371,6 +377,8 @@ public class BigQueryEventConsumerTest {
       Assert.assertEquals(TimeUnit.SECONDS.toMicros(86400), row.get("created").getTimestampValue());
       Assert.assertEquals("1970-01-02", row.get("bday").getStringValue());
       Assert.assertEquals(1.0d, row.get("score").getDoubleValue(), 0.000001d);
+      // staging table should be cleaned up
+      Assert.assertNull(bigQuery.getTable(TableId.of(dataset, STAGING_TABLE_PREFIX + tableName)));
     }
 
     for (String tableName : tableNames) {
