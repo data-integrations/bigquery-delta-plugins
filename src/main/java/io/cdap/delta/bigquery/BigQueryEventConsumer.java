@@ -345,7 +345,24 @@ public class BigQueryEventConsumer implements EventConsumer {
         //  in primaryKeyStore, put new entry in primaryKeyStore
         break;
       case TRUNCATE_TABLE:
-        // TODO: flush changes then run a DELETE from table WHERE 1=1 query
+        flush();
+        tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
+        table = bigQuery.getTable(tableId);
+        if (table != null) {
+          tableDefinition = table.getDefinition();
+          bigQuery.delete(tableId);
+        } else {
+          tableDefinition = StandardTableDefinition.newBuilder()
+            .setSchema(Schemas.convert(addSequenceNumber(event.getSchema())))
+            .build();
+        }
+
+        builder = TableInfo.newBuilder(tableId, tableDefinition);
+        if (encryptionConfig != null) {
+          builder.setEncryptionConfiguration(encryptionConfig);
+        }
+        tableInfo = builder.build();
+        bigQuery.create(tableInfo);
         break;
     }
     latestOffset = event.getOffset();
