@@ -279,15 +279,7 @@ public class BigQueryEventConsumer implements EventConsumer {
           TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
             .setSchema(Schemas.convert(addSequenceNumber(event.getSchema())))
             .build();
-          List<String> primaryKeys = event.getPrimaryKey();
-          if (primaryKeys.isEmpty()) {
-            throw new DeltaFailureException(
-              String.format("Table '%s' in database '%s' has no primary key. Tables without a primary key are" +
-                              " not supported.", tableId.getTable(), tableId.getDataset()));
-          }
-          primaryKeyStore.put(tableId, primaryKeys);
-          context.putState(String.format("bigquery-%s-%s", tableId.getDataset(), tableId.getTable()),
-                           Bytes.toBytes(GSON.toJson(new BigQueryTableState(primaryKeys))));
+          updatePrimaryKey(tableId, event.getPrimaryKey());
 
           TableInfo.Builder builder = TableInfo.newBuilder(tableId, tableDefinition);
           if (encryptionConfig != null) {
@@ -317,6 +309,7 @@ public class BigQueryEventConsumer implements EventConsumer {
         // need to flush any changes before altering the table to ensure all changes before the schema change
         // are in the table when it is altered.
         flush();
+        // after a flush, the staging table will be gone, so no need to alter it.
         tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
         table = bigQuery.getTable(tableId);
         TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
@@ -332,11 +325,14 @@ public class BigQueryEventConsumer implements EventConsumer {
         } else {
           bigQuery.update(tableInfo);
         }
-        // TODO: alter the staging table as well
+
+        updatePrimaryKey(tableId, event.getPrimaryKey());
         break;
       case RENAME_TABLE:
         // TODO: flush changes, execute a copy job, delete previous table, drop old staging table, remove old entry
         //  in primaryKeyStore, put new entry in primaryKeyStore
+        LOG.warn("Rename DDL events are not supported. Ignoring rename event in database {} from table {} to table {}.",
+                 event.getDatabase(), event.getPrevTable(), event.getTable());
         break;
       case TRUNCATE_TABLE:
         flush();
@@ -371,6 +367,21 @@ public class BigQueryEventConsumer implements EventConsumer {
     } else {
       context.setTableReplicating(normalizedDatabaseName, normalizedTableName);
     }
+  }
+
+  private void updatePrimaryKey(TableId tableId, List<String> primaryKeys) throws DeltaFailureException, IOException {
+    if (primaryKeys.isEmpty()) {
+      throw new DeltaFailureException(
+        String.format("Table '%s' in database '%s' has no primary key. Tables without a primary key are" +
+                        " not supported.", tableId.getTable(), tableId.getDataset()));
+    }
+    List<String> existingKey = primaryKeyStore.get(tableId);
+    if (primaryKeys.equals(existingKey)) {
+      return;
+    }
+    primaryKeyStore.put(tableId, primaryKeys);
+    context.putState(String.format("bigquery-%s-%s", tableId.getDataset(), tableId.getTable()),
+                     Bytes.toBytes(GSON.toJson(new BigQueryTableState(primaryKeys))));
   }
 
   private Schema addSequenceNumber(Schema original) {
