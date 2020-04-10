@@ -21,6 +21,7 @@ import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryOptions;
 import com.google.cloud.bigquery.Dataset;
+import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.FieldList;
 import com.google.cloud.bigquery.FieldValueList;
 import com.google.cloud.bigquery.Job;
@@ -75,6 +76,12 @@ import java.util.concurrent.TimeUnit;
  */
 public class BigQueryEventConsumerTest {
   private static final String STAGING_TABLE_PREFIX = "_staging_";
+  private static final Schema USER_SCHEMA = Schema.recordOf("user",
+    Schema.Field.of("id", Schema.of(Schema.Type.INT)),
+    Schema.Field.of("name", Schema.of(Schema.Type.STRING)),
+    Schema.Field.of("created", Schema.of(Schema.LogicalType.TIMESTAMP_MILLIS)),
+    Schema.Field.of("bday", Schema.of(Schema.LogicalType.DATE)),
+    Schema.Field.of("score", Schema.nullableOf(Schema.of(Schema.Type.DOUBLE))));
 
   private static Storage storage;
   private static BigQuery bigQuery;
@@ -116,6 +123,59 @@ public class BigQueryEventConsumerTest {
       .getService();
   }
 
+  @Test
+  public void testAlter() throws Exception {
+    String bucketName = "bqtest-" + UUID.randomUUID().toString();
+    Bucket bucket = storage.create(BucketInfo.of(bucketName));
+
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(NoOpContext.INSTANCE, storage, bigQuery, bucket,
+                                                                    project, 0, STAGING_TABLE_PREFIX, null);
+
+    String dataset = "testAlter";
+    String tableName = "users";
+
+    try {
+      long sequenceNum = createDatasetAndTable(eventConsumer, dataset, Collections.singletonList(tableName));
+
+      // alter schema to add a nullable field and make a non-nullable field into a nullable field
+      Schema updatedSchema =
+        Schema.recordOf("user-new",
+                        Schema.Field.of("id", Schema.of(Schema.Type.INT)),
+                        Schema.Field.of("name", Schema.of(Schema.Type.STRING)),
+                        Schema.Field.of("created", Schema.of(Schema.LogicalType.TIMESTAMP_MILLIS)),
+                        // alter bday to be nullable
+                        Schema.Field.of("bday", Schema.nullableOf(Schema.of(Schema.LogicalType.DATE))),
+                        // add a new nullable age field
+                        Schema.Field.of("age", Schema.nullableOf(Schema.of(Schema.Type.INT))),
+                        Schema.Field.of("score", Schema.nullableOf(Schema.of(Schema.Type.DOUBLE))));
+      DDLEvent alterEvent = DDLEvent.builder()
+        .setOperation(DDLOperation.ALTER_TABLE)
+        .setDatabase(dataset)
+        .setTable(tableName)
+        .setSchema(updatedSchema)
+        .setPrimaryKey(Collections.singletonList("id"))
+        .setOffset(new Offset())
+        .setSnapshot(false)
+        .build();
+      eventConsumer.applyDDL(new Sequenced<>(alterEvent, sequenceNum + 1));
+
+      Table table = bigQuery.getTable(TableId.of(dataset, tableName));
+      Assert.assertNotNull(table);
+      TableDefinition tableDefinition = table.getDefinition();
+      FieldList bqFields = tableDefinition.getSchema().getFields();
+      Assert.assertEquals(LegacySQLTypeName.INTEGER, bqFields.get("id").getType());
+      Assert.assertEquals(LegacySQLTypeName.STRING, bqFields.get("name").getType());
+      Assert.assertEquals(LegacySQLTypeName.TIMESTAMP, bqFields.get("created").getType());
+      Assert.assertEquals(LegacySQLTypeName.DATE, bqFields.get("bday").getType());
+      Assert.assertEquals(Field.Mode.NULLABLE, bqFields.get("bday").getMode());
+      Assert.assertEquals(LegacySQLTypeName.INTEGER, bqFields.get("age").getType());
+      Assert.assertEquals(Field.Mode.NULLABLE, bqFields.get("age").getMode());
+      Assert.assertEquals(LegacySQLTypeName.FLOAT, bqFields.get("score").getType());
+      Assert.assertEquals(Field.Mode.NULLABLE, bqFields.get("score").getMode());
+    } finally {
+      cleanupTest(bucket, dataset, eventConsumer);
+    }
+  }
 
   @Test
   public void testInsertUpdateDelete() throws Exception {
@@ -129,15 +189,7 @@ public class BigQueryEventConsumerTest {
     try {
       insertUpdateDelete(eventConsumer, dataset);
     } finally {
-      for (Blob blob : bucket.list().iterateAll()) {
-        storage.delete(blob.getBlobId());
-      }
-      bucket.delete();
-      Dataset ds = bigQuery.getDataset(dataset);
-      if (ds != null) {
-        ds.delete(BigQuery.DatasetDeleteOption.deleteContents());
-      }
-      eventConsumer.stop();
+      cleanupTest(bucket, dataset, eventConsumer);
     }
   }
 
@@ -153,28 +205,14 @@ public class BigQueryEventConsumerTest {
     try {
       insertTruncate(eventConsumer, dataset);
     } finally {
-      for (Blob blob : bucket.list().iterateAll()) {
-        storage.delete(blob.getBlobId());
-      }
-      bucket.delete();
-      Dataset ds = bigQuery.getDataset(dataset);
-      if (ds != null) {
-        ds.delete(BigQuery.DatasetDeleteOption.deleteContents());
-      }
-      eventConsumer.stop();
+      cleanupTest(bucket, dataset, eventConsumer);
     }
   }
 
   private void insertUpdateDelete(BigQueryEventConsumer eventConsumer, String dataset) throws Exception {
     List<String> tableNames = Arrays.asList("users1", "users2", "users3");
-    Schema schema = Schema.recordOf("user",
-                                    Schema.Field.of("id", Schema.of(Schema.Type.INT)),
-                                    Schema.Field.of("name", Schema.of(Schema.Type.STRING)),
-                                    Schema.Field.of("created", Schema.of(Schema.LogicalType.TIMESTAMP_MILLIS)),
-                                    Schema.Field.of("bday", Schema.of(Schema.LogicalType.DATE)),
-                                    Schema.Field.of("score", Schema.nullableOf(Schema.of(Schema.Type.DOUBLE))));
 
-    long sequenceNum = createDatasetAndTable(eventConsumer, dataset, tableNames, schema);
+    long sequenceNum = createDatasetAndTable(eventConsumer, dataset, tableNames);
 
     /*
         send events:
@@ -186,7 +224,7 @@ public class BigQueryEventConsumerTest {
         should result in:
           2, 'alice', 1000L, 1970-01-01, 0.0
      */
-    StructuredRecord insert1 = StructuredRecord.builder(schema)
+    StructuredRecord insert1 = StructuredRecord.builder(USER_SCHEMA)
       .set("id", 0)
       .set("name", "alice")
       .setTimestamp("created", ZonedDateTime.ofInstant(Instant.EPOCH, ZoneId.of("UTC")))
@@ -206,7 +244,7 @@ public class BigQueryEventConsumerTest {
       eventConsumer.applyDML(new Sequenced<>(insert1Event, sequenceNum++));
     }
 
-    StructuredRecord insert2 = StructuredRecord.builder(schema)
+    StructuredRecord insert2 = StructuredRecord.builder(USER_SCHEMA)
       .set("id", 1)
       .set("name", "bob")
       .setTimestamp("created", ZonedDateTime.ofInstant(Instant.ofEpochSecond(86400), ZoneId.of("UTC")))
@@ -250,7 +288,7 @@ public class BigQueryEventConsumerTest {
       Assert.assertNull(bigQuery.getTable(TableId.of(dataset, STAGING_TABLE_PREFIX + tableName)));
     }
 
-    StructuredRecord update = StructuredRecord.builder(schema)
+    StructuredRecord update = StructuredRecord.builder(USER_SCHEMA)
       .set("id", 2)
       .set("name", insert1.get("name"))
       .setTimestamp("created", insert1.getTimestamp("created"))
@@ -300,14 +338,8 @@ public class BigQueryEventConsumerTest {
 
   private void insertTruncate(BigQueryEventConsumer eventConsumer, String dataset) throws Exception {
     List<String> tableNames = Arrays.asList("users1", "users2", "users3");
-    Schema schema = Schema.recordOf("user",
-                                    Schema.Field.of("id", Schema.of(Schema.Type.INT)),
-                                    Schema.Field.of("name", Schema.of(Schema.Type.STRING)),
-                                    Schema.Field.of("created", Schema.of(Schema.LogicalType.TIMESTAMP_MILLIS)),
-                                    Schema.Field.of("bday", Schema.of(Schema.LogicalType.DATE)),
-                                    Schema.Field.of("score", Schema.nullableOf(Schema.of(Schema.Type.DOUBLE))));
 
-    long sequenceNum = createDatasetAndTable(eventConsumer, dataset, tableNames, schema);
+    long sequenceNum = createDatasetAndTable(eventConsumer, dataset, tableNames);
 
     /*
         send events:
@@ -317,7 +349,7 @@ public class BigQueryEventConsumerTest {
 
         should result in empty records in the table
      */
-    StructuredRecord insert1 = StructuredRecord.builder(schema)
+    StructuredRecord insert1 = StructuredRecord.builder(USER_SCHEMA)
       .set("id", 0)
       .set("name", "alice")
       .setTimestamp("created", ZonedDateTime.ofInstant(Instant.EPOCH, ZoneId.of("UTC")))
@@ -337,7 +369,7 @@ public class BigQueryEventConsumerTest {
       eventConsumer.applyDML(new Sequenced<>(insert1Event, sequenceNum++));
     }
 
-    StructuredRecord insert2 = StructuredRecord.builder(schema)
+    StructuredRecord insert2 = StructuredRecord.builder(USER_SCHEMA)
       .set("id", 1)
       .set("name", "bob")
       .setTimestamp("created", ZonedDateTime.ofInstant(Instant.ofEpochSecond(86400), ZoneId.of("UTC")))
@@ -399,8 +431,8 @@ public class BigQueryEventConsumerTest {
     }
   }
 
-  private long createDatasetAndTable(BigQueryEventConsumer eventConsumer, String dataset, List<String> tableNames,
-                                     Schema schema) throws Exception {
+  private long createDatasetAndTable(BigQueryEventConsumer eventConsumer, String dataset,
+                                     List<String> tableNames) throws Exception {
     long sequenceNum = 1L;
     // test creation of dataset
     DDLEvent createDatabase = DDLEvent.builder()
@@ -418,7 +450,7 @@ public class BigQueryEventConsumerTest {
         .setOperation(DDLOperation.CREATE_TABLE)
         .setDatabase(dataset)
         .setTable(tableName)
-        .setSchema(schema)
+        .setSchema(USER_SCHEMA)
         .setPrimaryKey(Collections.singletonList("id"))
         .build();
       eventConsumer.applyDDL(new Sequenced<>(createEvent, sequenceNum++));
@@ -443,5 +475,17 @@ public class BigQueryEventConsumerTest {
     Job queryJob = bigQuery.create(JobInfo.newBuilder(jobConfig).setJobId(jobId).build());
     queryJob.waitFor();
     return queryJob.getQueryResults();
+  }
+
+  private void cleanupTest(Bucket bucket, String dataset, BigQueryEventConsumer eventConsumer) {
+    for (Blob blob : bucket.list().iterateAll()) {
+      storage.delete(blob.getBlobId());
+    }
+    bucket.delete();
+    Dataset ds = bigQuery.getDataset(dataset);
+    if (ds != null) {
+      ds.delete(BigQuery.DatasetDeleteOption.deleteContents());
+    }
+    eventConsumer.stop();
   }
 }
