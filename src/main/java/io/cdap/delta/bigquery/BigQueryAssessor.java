@@ -18,6 +18,7 @@ package io.cdap.delta.bigquery;
 
 import com.google.cloud.bigquery.StandardSQLTypeName;
 import io.cdap.cdap.api.data.schema.Schema;
+import io.cdap.delta.api.assessment.Assessment;
 import io.cdap.delta.api.assessment.ColumnAssessment;
 import io.cdap.delta.api.assessment.ColumnSuggestion;
 import io.cdap.delta.api.assessment.ColumnSupport;
@@ -35,9 +36,26 @@ import java.util.List;
  */
 public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> {
   private final String stagingTablePrefix;
+  private final Assessment generalAssessment;
 
-  public BigQueryAssessor(String stagingTablePrefix) {
+  BigQueryAssessor(String stagingTablePrefix, int loadInterval) {
     this.stagingTablePrefix = stagingTablePrefix;
+    List<Problem> featureProblems = new ArrayList<>();
+    if (loadInterval < 90) {
+      featureProblems.add(new Problem(
+        "Minimum Load Interval",
+        String.format("A load interval of %d may cause more table operations than the BigQuery quota of 1000 table " +
+                        "operations per day. See https://cloud.google.com/bigquery/quotas for more information.",
+                      loadInterval),
+        "Set the load interval to at least 90 seconds.",
+        "Quota related failures may arise if there is data to replicate in every interval."));
+    }
+    this.generalAssessment = new Assessment(featureProblems, Collections.emptyList());
+  }
+
+  @Override
+  public Assessment assess() {
+    return generalAssessment;
   }
 
   @Override

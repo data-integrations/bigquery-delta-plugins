@@ -103,13 +103,13 @@ public class BigQueryTarget implements DeltaTarget {
       }
     }
 
-    return new BigQueryEventConsumer(context, storage, bigQuery, bucket, project, conf.getMaxBatchChanges(),
-                                     conf.getMaxBatchSeconds(), conf.getStagingTablePrefix(), encryptionConfig);
+    return new BigQueryEventConsumer(context, storage, bigQuery, bucket, project,
+                                     conf.getLoadIntervalSeconds(), conf.getStagingTablePrefix(), encryptionConfig);
   }
 
   @Override
   public TableAssessor<StandardizedTableDetail> createTableAssessor(Configurer configurer) {
-    return new BigQueryAssessor(conf.getStagingTablePrefix());
+    return new BigQueryAssessor(conf.stagingTablePrefix, conf.loadInterval);
   }
 
   /**
@@ -142,23 +142,15 @@ public class BigQueryTarget implements DeltaTarget {
     private String stagingTablePrefix;
 
     @Nullable
-    @Description("Maximum number of seconds to wait before writing a batch of changes.")
-    private Integer maxBatchSeconds;
-
-    @Nullable
-    @Description("Maximum number of changes to include in a batch.")
-    private Integer maxBatchChanges;
+    @Description("Number of seconds to wait in between loading batches of changes into BigQuery.")
+    private Integer loadInterval;
 
     private String getStagingTablePrefix() {
       return stagingTablePrefix == null || stagingTablePrefix.isEmpty() ? "_staging_" : stagingTablePrefix;
     }
 
-    int getMaxBatchSeconds() {
-      return maxBatchSeconds == null ? 60 : maxBatchSeconds;
-    }
-
-    int getMaxBatchChanges() {
-      return maxBatchChanges == null ? 1000 * 1000 : maxBatchChanges;
+    int getLoadIntervalSeconds() {
+      return loadInterval == null ? 90 : loadInterval;
     }
 
     private String getProject() {

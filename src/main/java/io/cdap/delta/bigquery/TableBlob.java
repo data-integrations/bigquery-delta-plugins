@@ -28,15 +28,18 @@ public class TableBlob {
   private final Schema stagingSchema;
   private final Schema targetSchema;
   private final long batchId;
+  private final long numEvents;
   private final Blob blob;
 
-  public TableBlob(String dataset, String table, Schema targetSchema, Schema stagingSchema, long batchId, Blob blob) {
+  public TableBlob(String dataset, String table, Schema targetSchema, Schema stagingSchema, long batchId,
+                   long numEvents, Blob blob) {
     this.dataset = dataset;
     this.table = table;
     this.targetSchema = targetSchema;
     this.stagingSchema = stagingSchema;
     this.batchId = batchId;
     this.blob = blob;
+    this.numEvents = numEvents;
   }
 
   public String getDataset() {
@@ -57,6 +60,10 @@ public class TableBlob {
 
   public long getBatchId() {
     return batchId;
+  }
+
+  public long getNumEvents() {
+    return numEvents;
   }
 
   public Blob getBlob() {

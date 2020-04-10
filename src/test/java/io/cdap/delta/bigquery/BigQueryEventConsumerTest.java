@@ -123,7 +123,7 @@ public class BigQueryEventConsumerTest {
     Bucket bucket = storage.create(BucketInfo.of(bucketName));
 
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(NoOpContext.INSTANCE, storage, bigQuery, bucket,
-                                                                    project, 100, 0, STAGING_TABLE_PREFIX, null);
+                                                                    project, 0, STAGING_TABLE_PREFIX, null);
 
     String dataset = "testInsertUpdateDelete";
     try {
@@ -147,7 +147,7 @@ public class BigQueryEventConsumerTest {
     Bucket bucket = storage.create(BucketInfo.of(bucketName));
 
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(NoOpContext.INSTANCE, storage, bigQuery, bucket,
-                                                                    project, 100, 0, STAGING_TABLE_PREFIX, null);
+                                                                    project, 0, STAGING_TABLE_PREFIX, null);
 
     String dataset = "testInsertTruncate";
     try {
