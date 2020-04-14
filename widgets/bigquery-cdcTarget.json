@@ -28,7 +28,7 @@
         {
           "name": "serviceAccountKey",
           "label": "Service Account Key",
-          "widget-type": "password"
+          "widget-type": "securekey-textarea"
         }
       ]
     },
