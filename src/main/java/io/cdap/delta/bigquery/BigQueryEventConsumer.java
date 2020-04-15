@@ -274,12 +274,12 @@ public class BigQueryEventConsumer implements EventConsumer {
       case CREATE_TABLE:
         TableId tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
         Table table = bigQuery.getTable(tableId);
+        updatePrimaryKey(tableId, event.getPrimaryKey());
         // TODO: check schema of table if it exists already
         if (table == null) {
           TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
             .setSchema(Schemas.convert(addSequenceNumber(event.getSchema())))
             .build();
-          updatePrimaryKey(tableId, event.getPrimaryKey());
 
           TableInfo.Builder builder = TableInfo.newBuilder(tableId, tableDefinition);
           if (encryptionConfig != null) {
