@@ -17,7 +17,7 @@
         },
         {
           "name": "stagingBucket",
-          "label": "Staging Bucket Name",
+          "label": "Staging Bucket",
           "widget-type": "textbox"
         }
       ]
@@ -49,6 +49,22 @@
           "widget-type": "textbox",
           "widget-attributes": {
             "default": "_staging_"
+          }
+        },
+        {
+          "name": "requireManualDrops",
+          "label": "Require Manual Drop Intervention",
+          "widget-type": "toggle",
+          "widget-attributes": {
+            "default": "false",
+            "on": {
+              "value": "true",
+              "label": "True"
+            },
+            "off": {
+              "value": "false",
+              "label": "False"
+            }
           }
         }
       ]
