@@ -173,6 +173,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final Map<TableId, Long> latestSeenSequence;
   private final Map<TableId, Long> latestMergedSequence;
   private final Map<TableId, List<String>> primaryKeyStore;
+  private final boolean requireManualDrops;
   private ScheduledExecutorService executorService;
   private ScheduledFuture<?> scheduledFlush;
   private ExecutorService mergeExecutorService;
@@ -184,7 +185,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   // Without keeping the entire batch in memory, there would be no way to recover the records that failed to write
 
   BigQueryEventConsumer(DeltaTargetContext context, Storage storage, BigQuery bigQuery, Bucket bucket,
-                        String project, int loadIntervalSeconds, String stagingTablePrefix,
+                        String project, int loadIntervalSeconds, String stagingTablePrefix, boolean requireManualDrops,
                         @Nullable EncryptionConfiguration encryptionConfig) {
     this.context = context;
     this.bigQuery = bigQuery;
@@ -213,6 +214,7 @@ public class BigQueryEventConsumer implements EventConsumer {
                    failureContext.getLastFailure());
         }
       });
+    this.requireManualDrops = requireManualDrops;
     mergeExecutorService = Executors.newCachedThreadPool(Threads.createDaemonThreadFactory("bq-merge-%d"));
   }
 
@@ -268,6 +270,13 @@ public class BigQueryEventConsumer implements EventConsumer {
         datasetId = DatasetId.of(project, normalizedDatabaseName);
         primaryKeyStore.clear();
         if (bigQuery.getDataset(datasetId) != null) {
+          if (requireManualDrops) {
+            throw new RuntimeException(
+              String.format("Encountered an event to drop dataset '%s' in project '%s', " +
+                              "but the target is configured to require manual drops. " +
+                              "Please manually drop the dataset to make progress.",
+                            normalizedDatabaseName, project));
+          }
           bigQuery.delete(datasetId);
         }
         break;
@@ -297,6 +306,13 @@ public class BigQueryEventConsumer implements EventConsumer {
         primaryKeyStore.remove(tableId);
         table = bigQuery.getTable(tableId);
         if (table != null) {
+          if (requireManualDrops) {
+            throw new RuntimeException(
+              String.format("Encountered an event to drop table '%s' in dataset '%s' in project '%s', " +
+                              "but the target is configured to require manual drops. " +
+                              "Please manually drop the table to make progress.",
+                            normalizedTableName, normalizedDatabaseName, project));
+          }
           bigQuery.delete(tableId);
         }
         TableId stagingTableId = TableId.of(project, normalizedDatabaseName, normalizedStagingTableName);

@@ -21,6 +21,7 @@ import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryOptions;
 import com.google.cloud.bigquery.Dataset;
+import com.google.cloud.bigquery.DatasetInfo;
 import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.FieldList;
 import com.google.cloud.bigquery.FieldValueList;
@@ -29,9 +30,11 @@ import com.google.cloud.bigquery.JobId;
 import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.LegacySQLTypeName;
 import com.google.cloud.bigquery.QueryJobConfiguration;
+import com.google.cloud.bigquery.StandardTableDefinition;
 import com.google.cloud.bigquery.Table;
 import com.google.cloud.bigquery.TableDefinition;
 import com.google.cloud.bigquery.TableId;
+import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.bigquery.TableResult;
 import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.Bucket;
@@ -124,12 +127,84 @@ public class BigQueryEventConsumerTest {
   }
 
   @Test
+  public void testManualDrops() throws Exception {
+    String bucketName = "bqtest-" + UUID.randomUUID().toString();
+    Bucket bucket = storage.create(BucketInfo.of(bucketName));
+
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(NoOpContext.INSTANCE, storage, bigQuery, bucket,
+                                                                    project, 0, STAGING_TABLE_PREFIX, true, null);
+
+    String dataset = "testManualDrops";
+    String tableName = "users";
+    TableId tableId = TableId.of(dataset, tableName);
+
+    try {
+      bigQuery.create(DatasetInfo.newBuilder(dataset).build());
+      bigQuery.create(TableInfo.newBuilder(tableId, StandardTableDefinition.newBuilder().build()).build());
+
+      // dropping a table that doesn't exist should be fine
+      DDLEvent dropTable = DDLEvent.builder()
+        .setOperation(DDLOperation.DROP_TABLE)
+        .setDatabase(dataset)
+        .setTable(UUID.randomUUID().toString())
+        .setOffset(new Offset())
+        .build();
+      eventConsumer.applyDDL(new Sequenced<>(dropTable, 0));
+
+      dropTable = DDLEvent.builder()
+        .setOperation(DDLOperation.DROP_TABLE)
+        .setDatabase(dataset)
+        .setTable(tableName)
+        .setOffset(new Offset())
+        .build();
+      try {
+        eventConsumer.applyDDL(new Sequenced<>(dropTable, 1));
+        Assert.fail("Expected exception when dropping table that already exists");
+      } catch (Exception e) {
+        // expected
+      }
+
+      // manually drop the table and replay the event, which should now succeed
+      bigQuery.delete(tableId);
+      eventConsumer.applyDDL(new Sequenced<>(dropTable, 1));
+
+      DDLEvent dropDatabase = DDLEvent.builder()
+        .setOperation(DDLOperation.DROP_DATABASE)
+        .setDatabase(UUID.randomUUID().toString())
+        .setOffset(new Offset())
+        .build();
+      // should be fine if the dataset doesn't already exist
+      eventConsumer.applyDDL(new Sequenced<>(dropDatabase, 2));
+
+      dropDatabase = DDLEvent.builder()
+        .setOperation(DDLOperation.DROP_DATABASE)
+        .setDatabase(dataset)
+        .setOffset(new Offset())
+        .build();
+      try {
+        eventConsumer.applyDDL(new Sequenced<>(dropDatabase, 2));
+        Assert.fail("Expected exception when dropping dataset that already exists");
+      } catch (Exception e) {
+        // expected
+      }
+
+      // manually drop the dataset and replay the event, which should now succeed
+      bigQuery.delete(dataset);
+      eventConsumer.applyDDL(new Sequenced<>(dropDatabase, 2));
+
+
+    } finally {
+      cleanupTest(bucket, dataset, eventConsumer);
+    }
+  }
+
+  @Test
   public void testAlter() throws Exception {
     String bucketName = "bqtest-" + UUID.randomUUID().toString();
     Bucket bucket = storage.create(BucketInfo.of(bucketName));
 
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(NoOpContext.INSTANCE, storage, bigQuery, bucket,
-                                                                    project, 0, STAGING_TABLE_PREFIX, null);
+                                                                    project, 0, STAGING_TABLE_PREFIX, false, null);
 
     String dataset = "testAlter";
     String tableName = "users";
@@ -183,7 +258,7 @@ public class BigQueryEventConsumerTest {
     Bucket bucket = storage.create(BucketInfo.of(bucketName));
 
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(NoOpContext.INSTANCE, storage, bigQuery, bucket,
-                                                                    project, 0, STAGING_TABLE_PREFIX, null);
+                                                                    project, 0, STAGING_TABLE_PREFIX, false, null);
 
     String dataset = "testInsertUpdateDelete";
     try {
@@ -199,7 +274,7 @@ public class BigQueryEventConsumerTest {
     Bucket bucket = storage.create(BucketInfo.of(bucketName));
 
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(NoOpContext.INSTANCE, storage, bigQuery, bucket,
-                                                                    project, 0, STAGING_TABLE_PREFIX, null);
+                                                                    project, 0, STAGING_TABLE_PREFIX, false, null);
 
     String dataset = "testInsertTruncate";
     try {

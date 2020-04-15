@@ -104,7 +104,8 @@ public class BigQueryTarget implements DeltaTarget {
     }
 
     return new BigQueryEventConsumer(context, storage, bigQuery, bucket, project,
-                                     conf.getLoadIntervalSeconds(), conf.getStagingTablePrefix(), encryptionConfig);
+                                     conf.getLoadIntervalSeconds(), conf.getStagingTablePrefix(),
+                                     conf.requiresManualDrops(), encryptionConfig);
   }
 
   @Override
@@ -145,12 +146,20 @@ public class BigQueryTarget implements DeltaTarget {
     @Description("Number of seconds to wait in between loading batches of changes into BigQuery.")
     private Integer loadInterval;
 
+    @Nullable
+    @Description("Whether to require manual intervention when a drop table or drop database event is encountered.")
+    private Boolean requireManualDrops;
+
     private String getStagingTablePrefix() {
       return stagingTablePrefix == null || stagingTablePrefix.isEmpty() ? "_staging_" : stagingTablePrefix;
     }
 
     int getLoadIntervalSeconds() {
       return loadInterval == null ? 90 : loadInterval;
+    }
+
+    public boolean requiresManualDrops() {
+      return requireManualDrops == null ? false : requireManualDrops;
     }
 
     private String getProject() {
