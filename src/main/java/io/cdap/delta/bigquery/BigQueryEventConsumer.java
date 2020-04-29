@@ -174,9 +174,9 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final Map<TableId, Long> latestMergedSequence;
   private final Map<TableId, List<String>> primaryKeyStore;
   private final boolean requireManualDrops;
-  private ScheduledExecutorService executorService;
+  private ScheduledExecutorService scheduledExecutorService;
   private ScheduledFuture<?> scheduledFlush;
-  private ExecutorService mergeExecutorService;
+  private ExecutorService executorService;
   private Offset latestOffset;
   private long latestSequenceNum;
   private Exception flushException;
@@ -191,12 +191,9 @@ public class BigQueryEventConsumer implements EventConsumer {
     this.bigQuery = bigQuery;
     this.loadIntervalSeconds = loadIntervalSeconds;
     this.stagingTablePrefix = stagingTablePrefix;
-    this.gcsWriter = new MultiGCSWriter(storage, bucket.getName(),
-                                        String.format("cdap/delta/%s/", context.getApplicationName()),
-                                        context);
     this.bucket = bucket;
     this.project = project;
-    this.executorService = Executors.newSingleThreadScheduledExecutor();
+    this.scheduledExecutorService = Executors.newSingleThreadScheduledExecutor();
     this.latestSequenceNum = 0L;
     this.encryptionConfig = encryptionConfig;
     // these maps are only accessed in synchronized methods so they do not need to be thread safe.
@@ -215,12 +212,15 @@ public class BigQueryEventConsumer implements EventConsumer {
         }
       });
     this.requireManualDrops = requireManualDrops;
-    mergeExecutorService = Executors.newCachedThreadPool(Threads.createDaemonThreadFactory("bq-merge-%d"));
+    this.executorService = Executors.newCachedThreadPool(Threads.createDaemonThreadFactory("bq-daemon-%d"));
+    this.gcsWriter = new MultiGCSWriter(storage, bucket.getName(),
+                                        String.format("cdap/delta/%s/", context.getApplicationName()),
+                                        context, executorService);
   }
 
   @Override
   public void start() {
-    scheduledFlush = executorService.scheduleAtFixedRate(() -> {
+    scheduledFlush = scheduledExecutorService.scheduleAtFixedRate(() -> {
       try {
         flush();
       } catch (InterruptedException e) {
@@ -236,11 +236,11 @@ public class BigQueryEventConsumer implements EventConsumer {
     if (scheduledFlush != null) {
       scheduledFlush.cancel(true);
     }
+    scheduledExecutorService.shutdownNow();
     executorService.shutdownNow();
-    mergeExecutorService.shutdownNow();
     try {
+      scheduledExecutorService.awaitTermination(10, TimeUnit.SECONDS);
       executorService.awaitTermination(10, TimeUnit.SECONDS);
-      mergeExecutorService.awaitTermination(10, TimeUnit.SECONDS);
     } catch (InterruptedException e) {
       // just return and let everything end
     }
@@ -470,7 +470,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     List<Future<?>> mergeFutures = new ArrayList<>(tableBlobs.size());
     for (TableBlob blob : tableBlobs) {
       // submit a callable instead of a runnable so that it can throw checked exceptions
-      mergeFutures.add(mergeExecutorService.submit((Callable<Void>) () -> {
+      mergeFutures.add(executorService.submit((Callable<Void>) () -> {
         mergeTableChanges(blob);
         return null;
       }));

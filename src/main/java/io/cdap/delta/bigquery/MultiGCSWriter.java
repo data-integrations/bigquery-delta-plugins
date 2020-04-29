@@ -23,7 +23,6 @@ import com.google.cloud.storage.Storage;
 import io.cdap.cdap.api.data.format.StructuredRecord;
 import io.cdap.cdap.api.data.schema.Schema;
 import io.cdap.delta.api.DMLEvent;
-import io.cdap.delta.api.DMLOperation;
 import io.cdap.delta.api.DeltaTargetContext;
 import io.cdap.delta.api.ReplicationError;
 import io.cdap.delta.api.Sequenced;
@@ -37,10 +36,15 @@ import java.io.OutputStream;
 import java.nio.channels.Channels;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 
 /**
  * Writes to multiple GCS files.
@@ -53,15 +57,17 @@ public class MultiGCSWriter {
   private final Map<Key, TableObject> objects;
   private final Map<Schema, org.apache.avro.Schema> schemaMap;
   private final DeltaTargetContext context;
+  private final ExecutorService executorService;
 
   public MultiGCSWriter(Storage storage, String bucket, String baseObjectName,
-                        DeltaTargetContext context) {
+                        DeltaTargetContext context, ExecutorService executorService) {
     this.storage = storage;
     this.bucket = bucket;
     this.baseObjectName = baseObjectName;
     this.objects = new HashMap<>();
     this.schemaMap = new HashMap<>();
     this.context = context;
+    this.executorService = executorService;
   }
 
   public synchronized void write(Sequenced<DMLEvent> sequencedEvent) {
@@ -76,33 +82,69 @@ public class MultiGCSWriter {
     }
   }
 
-  public synchronized Collection<TableBlob> flush() throws IOException {
-    List<TableBlob> writtenObjects = new ArrayList<>(objects.size());
-    IOException error = null;
+  public synchronized Collection<TableBlob> flush() throws IOException, InterruptedException {
+    List<TableBlob> writtenObjects = Collections.synchronizedList(new ArrayList<>(objects.size()));
+    List<Future<?>> writeFutures = new ArrayList<>(objects.size());
     for (Map.Entry<Key, TableObject> entry : objects.entrySet()) {
       TableObject tableObject = entry.getValue();
+      writeFutures.add(executorService.submit((Callable<Void>) () -> {
+        LOG.debug("Writing batch {} of {} events into GCS for table {}.{}", tableObject.batchId, tableObject.numEvents,
+                  tableObject.dataset, tableObject.table);
+        try {
+          tableObject.close();
+        } catch (IOException e) {
+          String errMsg = String.format("Error writing batch of %d changes for %s.%s to GCS",
+                                        tableObject.numEvents, tableObject.dataset, tableObject.table);
+          LOG.error(errMsg, e);
+          context.setTableError(tableObject.dataset, tableObject.table,
+                                new ReplicationError(errMsg, e.getStackTrace()));
+          throw e;
+        }
+        LOG.debug("Wrote batch {} of {} events into GCS for table {}.{}", tableObject.batchId, tableObject.numEvents,
+                  tableObject.dataset, tableObject.table);
+
+        Blob blob = storage.get(tableObject.blobId);
+        writtenObjects.add(new TableBlob(tableObject.dataset, tableObject.table, tableObject.targetSchema,
+                                         tableObject.stagingSchema, tableObject.batchId, tableObject.numEvents, blob));
+        return null;
+      }));
+    }
+
+    IOException error = null;
+    for (Future writeFuture: writeFutures) {
       try {
-        tableObject.close();
+        getWriteFuture(writeFuture);
+      } catch (InterruptedException e) {
+        throw e;
       } catch (IOException e) {
-        String errMsg = String.format("Error writing batch of %d changes for %s.%s to GCS",
-                                      tableObject.numEvents, tableObject.dataset, tableObject.table);
-        LOG.error(errMsg, e);
-        context.setTableError(tableObject.dataset, tableObject.table, new ReplicationError(errMsg, e.getStackTrace()));
         if (error == null) {
           error = e;
         } else {
           error.addSuppressed(e);
         }
       }
-      Blob blob = storage.get(tableObject.blobId);
-      writtenObjects.add(new TableBlob(tableObject.dataset, tableObject.table, tableObject.targetSchema,
-                                       tableObject.stagingSchema, tableObject.batchId, tableObject.numEvents, blob));
     }
+
     if (error != null) {
       throw error;
     }
     objects.clear();
     return writtenObjects;
+  }
+
+  private static <T> T getWriteFuture(Future<T> writeFuture) throws IOException, InterruptedException {
+    try {
+      return writeFuture.get();
+    } catch (ExecutionException e) {
+      Throwable cause = e.getCause();
+      if (cause instanceof IOException) {
+        throw (IOException) cause;
+      }
+      if (cause instanceof InterruptedException) {
+        throw (InterruptedException) cause;
+      }
+      throw new RuntimeException(cause.getMessage(), cause);
+    }
   }
 
   private class Key {
