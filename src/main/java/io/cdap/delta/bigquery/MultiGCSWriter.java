@@ -82,7 +82,7 @@ public class MultiGCSWriter {
 
   public synchronized Collection<TableBlob> flush() throws IOException, InterruptedException {
     List<TableBlob> writtenObjects = new ArrayList<>(objects.size());
-    List<Future<?>> writeFutures = new ArrayList<>(objects.size());
+    List<Future<TableBlob>> writeFutures = new ArrayList<>(objects.size());
     for (Map.Entry<Key, TableObject> entry : objects.entrySet()) {
       TableObject tableObject = entry.getValue();
       writeFutures.add(executorService.submit(() -> {
@@ -107,7 +107,7 @@ public class MultiGCSWriter {
     }
 
     IOException error = null;
-    for (Future writeFuture : writeFutures) {
+    for (Future<TableBlob> writeFuture : writeFutures) {
       try {
         writtenObjects.add(getWriteFuture(writeFuture));
       } catch (InterruptedException e) {
