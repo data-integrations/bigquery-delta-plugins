@@ -36,12 +36,10 @@ import java.io.OutputStream;
 import java.nio.channels.Channels;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
@@ -83,11 +81,11 @@ public class MultiGCSWriter {
   }
 
   public synchronized Collection<TableBlob> flush() throws IOException, InterruptedException {
-    List<TableBlob> writtenObjects = Collections.synchronizedList(new ArrayList<>(objects.size()));
+    List<TableBlob> writtenObjects = new ArrayList<>(objects.size());
     List<Future<?>> writeFutures = new ArrayList<>(objects.size());
     for (Map.Entry<Key, TableObject> entry : objects.entrySet()) {
       TableObject tableObject = entry.getValue();
-      writeFutures.add(executorService.submit((Callable<Void>) () -> {
+      writeFutures.add(executorService.submit(() -> {
         LOG.debug("Writing batch {} of {} events into GCS for table {}.{}", tableObject.batchId, tableObject.numEvents,
                   tableObject.dataset, tableObject.table);
         try {
@@ -95,25 +93,23 @@ public class MultiGCSWriter {
         } catch (IOException e) {
           String errMsg = String.format("Error writing batch of %d changes for %s.%s to GCS",
                                         tableObject.numEvents, tableObject.dataset, tableObject.table);
-          LOG.error(errMsg, e);
           context.setTableError(tableObject.dataset, tableObject.table,
                                 new ReplicationError(errMsg, e.getStackTrace()));
-          throw e;
+          throw new IOException(errMsg, e);
         }
         LOG.debug("Wrote batch {} of {} events into GCS for table {}.{}", tableObject.batchId, tableObject.numEvents,
                   tableObject.dataset, tableObject.table);
 
         Blob blob = storage.get(tableObject.blobId);
-        writtenObjects.add(new TableBlob(tableObject.dataset, tableObject.table, tableObject.targetSchema,
-                                         tableObject.stagingSchema, tableObject.batchId, tableObject.numEvents, blob));
-        return null;
+        return new TableBlob(tableObject.dataset, tableObject.table, tableObject.targetSchema,
+                             tableObject.stagingSchema, tableObject.batchId, tableObject.numEvents, blob);
       }));
     }
 
     IOException error = null;
-    for (Future writeFuture: writeFutures) {
+    for (Future writeFuture : writeFutures) {
       try {
-        getWriteFuture(writeFuture);
+        writtenObjects.add(getWriteFuture(writeFuture));
       } catch (InterruptedException e) {
         throw e;
       } catch (IOException e) {
@@ -132,7 +128,7 @@ public class MultiGCSWriter {
     return writtenObjects;
   }
 
-  private static <T> T getWriteFuture(Future<T> writeFuture) throws IOException, InterruptedException {
+  private static TableBlob getWriteFuture(Future<TableBlob> writeFuture) throws IOException, InterruptedException {
     try {
       return writeFuture.get();
     } catch (ExecutionException e) {
