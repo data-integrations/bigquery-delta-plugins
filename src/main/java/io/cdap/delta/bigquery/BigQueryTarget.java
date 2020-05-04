@@ -110,7 +110,7 @@ public class BigQueryTarget implements DeltaTarget {
 
   @Override
   public TableAssessor<StandardizedTableDetail> createTableAssessor(Configurer configurer) {
-    return new BigQueryAssessor(conf.stagingTablePrefix, conf.loadInterval);
+    return new BigQueryAssessor(conf.stagingTablePrefix);
   }
 
   /**

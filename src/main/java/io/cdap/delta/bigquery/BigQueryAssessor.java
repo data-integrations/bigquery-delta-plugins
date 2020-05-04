@@ -36,26 +36,9 @@ import java.util.List;
  */
 public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> {
   private final String stagingTablePrefix;
-  private final Assessment generalAssessment;
 
-  BigQueryAssessor(String stagingTablePrefix, int loadInterval) {
+  BigQueryAssessor(String stagingTablePrefix) {
     this.stagingTablePrefix = stagingTablePrefix;
-    List<Problem> featureProblems = new ArrayList<>();
-    if (loadInterval < 90) {
-      featureProblems.add(new Problem(
-        "Minimum Load Interval",
-        String.format("A load interval of %d may cause more table operations than the BigQuery quota of 1000 table " +
-                        "operations per day. See https://cloud.google.com/bigquery/quotas for more information.",
-                      loadInterval),
-        "Set the load interval to at least 90 seconds.",
-        "Quota related failures may arise if there is data to replicate in every interval."));
-    }
-    this.generalAssessment = new Assessment(featureProblems, Collections.emptyList());
-  }
-
-  @Override
-  public Assessment assess() {
-    return generalAssessment;
   }
 
   @Override
