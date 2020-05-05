@@ -68,7 +68,11 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Tests for BigQueryEventConsumer. In order to run these tests, service account credentials must be set in the system
@@ -127,12 +131,56 @@ public class BigQueryEventConsumerTest {
   }
 
   @Test
+  public void testManualDropRetries() throws Exception {
+    String bucketName = "bqtest-" + UUID.randomUUID().toString();
+    Bucket bucket = storage.create(BucketInfo.of(bucketName));
+
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(new MockContext(300), storage, bigQuery, bucket,
+                                                                    project, 0, STAGING_TABLE_PREFIX, true, null,
+                                                                    1L);
+
+    String dataset = "testManualDropRetries";
+    String tableName = "users";
+    TableId tableId = TableId.of(dataset, tableName);
+
+    try {
+      bigQuery.create(DatasetInfo.newBuilder(dataset).build());
+      bigQuery.create(TableInfo.newBuilder(tableId, StandardTableDefinition.newBuilder().build()).build());
+
+      DDLEvent dropTable = DDLEvent.builder()
+        .setOperation(DDLOperation.DROP_TABLE)
+        .setDatabase(dataset)
+        .setTable(tableName)
+        .setOffset(new Offset())
+        .build();
+
+      ExecutorService executorService = Executors.newSingleThreadExecutor();
+      Future<Void> future = executorService.submit(() -> {
+        eventConsumer.applyDDL(new Sequenced<>(dropTable, 0));
+        return null;
+      });
+
+      try {
+        future.get(10, TimeUnit.SECONDS);
+        Assert.fail("Should not have dropped the table automatically.");
+      } catch (TimeoutException e) {
+        // expected
+      }
+
+      bigQuery.delete(tableId);
+      future.get(1, TimeUnit.MINUTES);
+    } finally {
+      cleanupTest(bucket, dataset, eventConsumer);
+    }
+  }
+
+  @Test
   public void testManualDrops() throws Exception {
     String bucketName = "bqtest-" + UUID.randomUUID().toString();
     Bucket bucket = storage.create(BucketInfo.of(bucketName));
 
-    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(NoOpContext.INSTANCE, storage, bigQuery, bucket,
-                                                                    project, 0, STAGING_TABLE_PREFIX, true, null);
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(MockContext.INSTANCE, storage, bigQuery, bucket,
+                                                                    project, 0, STAGING_TABLE_PREFIX, true, null, null);
 
     String dataset = "testManualDrops";
     String tableName = "users";
@@ -203,8 +251,9 @@ public class BigQueryEventConsumerTest {
     String bucketName = "bqtest-" + UUID.randomUUID().toString();
     Bucket bucket = storage.create(BucketInfo.of(bucketName));
 
-    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(NoOpContext.INSTANCE, storage, bigQuery, bucket,
-                                                                    project, 0, STAGING_TABLE_PREFIX, false, null);
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(MockContext.INSTANCE, storage, bigQuery, bucket,
+                                                                    project, 0, STAGING_TABLE_PREFIX, false, null,
+                                                                    null);
 
     String dataset = "testAlter";
     String tableName = "users";
@@ -257,8 +306,9 @@ public class BigQueryEventConsumerTest {
     String bucketName = "bqtest-" + UUID.randomUUID().toString();
     Bucket bucket = storage.create(BucketInfo.of(bucketName));
 
-    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(NoOpContext.INSTANCE, storage, bigQuery, bucket,
-                                                                    project, 0, STAGING_TABLE_PREFIX, false, null);
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(MockContext.INSTANCE, storage, bigQuery, bucket,
+                                                                    project, 0, STAGING_TABLE_PREFIX, false, null,
+                                                                    null);
 
     String dataset = "testInsertUpdateDelete";
     try {
@@ -273,8 +323,9 @@ public class BigQueryEventConsumerTest {
     String bucketName = "bqtest-" + UUID.randomUUID().toString();
     Bucket bucket = storage.create(BucketInfo.of(bucketName));
 
-    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(NoOpContext.INSTANCE, storage, bigQuery, bucket,
-                                                                    project, 0, STAGING_TABLE_PREFIX, false, null);
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(MockContext.INSTANCE, storage, bigQuery, bucket,
+                                                                    project, 0, STAGING_TABLE_PREFIX, false, null,
+                                                                    null);
 
     String dataset = "testInsertTruncate";
     try {
