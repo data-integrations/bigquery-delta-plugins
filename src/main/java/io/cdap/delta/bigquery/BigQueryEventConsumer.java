@@ -174,6 +174,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final Map<TableId, Long> latestMergedSequence;
   private final Map<TableId, List<String>> primaryKeyStore;
   private final boolean requireManualDrops;
+  private final long baseRetryDelay;
   private ScheduledExecutorService scheduledExecutorService;
   private ScheduledFuture<?> scheduledFlush;
   private ExecutorService executorService;
@@ -186,7 +187,7 @@ public class BigQueryEventConsumer implements EventConsumer {
 
   BigQueryEventConsumer(DeltaTargetContext context, Storage storage, BigQuery bigQuery, Bucket bucket,
                         String project, int loadIntervalSeconds, String stagingTablePrefix, boolean requireManualDrops,
-                        @Nullable EncryptionConfiguration encryptionConfig) {
+                        @Nullable EncryptionConfiguration encryptionConfig, @Nullable Long baseRetryDelay) {
     this.context = context;
     this.bigQuery = bigQuery;
     this.loadIntervalSeconds = loadIntervalSeconds;
@@ -216,6 +217,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     this.gcsWriter = new MultiGCSWriter(storage, bucket.getName(),
                                         String.format("cdap/delta/%s/", context.getApplicationName()),
                                         context, executorService);
+    this.baseRetryDelay = baseRetryDelay == null ? 10L : baseRetryDelay;
   }
 
   @Override
@@ -258,6 +260,42 @@ public class BigQueryEventConsumer implements EventConsumer {
     String normalizedTableName = normalize(event.getTable());
     String normalizedStagingTableName = normalizedTableName == null ? null :
       normalize(stagingTablePrefix + normalizedTableName);
+
+    try {
+      Failsafe.with(createBaseRetryPolicy(baseRetryDelay)).run(() -> {
+        handleDDL(event, normalizedDatabaseName, normalizedTableName, normalizedStagingTableName);
+      });
+    } catch (TimeoutExceededException e) {
+      throw new DeltaFailureException(
+        String.format("Exhausted retries trying to apply '%s' DDL event", event.getOperation()), e);
+    } catch (FailsafeException e) {
+      if (e.getCause() instanceof InterruptedException) {
+        throw (InterruptedException) e.getCause();
+      }
+      if (e.getCause() instanceof DeltaFailureException) {
+        throw (DeltaFailureException) e.getCause();
+      }
+      throw e;
+    }
+
+    latestOffset = event.getOffset();
+    latestSequenceNum = sequencedEvent.getSequenceNumber();
+    if (normalizedTableName != null) {
+      latestSeenSequence.put(TableId.of(project, normalizedDatabaseName, normalizedTableName),
+                             sequencedEvent.getSequenceNumber());
+    }
+    context.incrementCount(event.getOperation());
+    if (event.isSnapshot()) {
+      context.setTableSnapshotting(normalizedDatabaseName, normalizedTableName);
+    } else {
+      context.setTableReplicating(normalizedDatabaseName, normalizedTableName);
+    }
+  }
+
+  private void handleDDL(DDLEvent event, String normalizedDatabaseName, String normalizedTableName,
+                         String normalizedStagingTableName)
+    throws IOException, DeltaFailureException, InterruptedException {
+
     switch (event.getOperation()) {
       case CREATE_DATABASE:
         DatasetId datasetId = DatasetId.of(project, normalizedDatabaseName);
@@ -271,11 +309,12 @@ public class BigQueryEventConsumer implements EventConsumer {
         primaryKeyStore.clear();
         if (bigQuery.getDataset(datasetId) != null) {
           if (requireManualDrops) {
-            throw new RuntimeException(
-              String.format("Encountered an event to drop dataset '%s' in project '%s', " +
-                              "but the target is configured to require manual drops. " +
-                              "Please manually drop the dataset to make progress.",
-                            normalizedDatabaseName, project));
+            String message = String.format("Encountered an event to drop dataset '%s' in project '%s', " +
+                                             "but the target is configured to require manual drops. " +
+                                             "Please manually drop the dataset to make progress.",
+                                           normalizedDatabaseName, project);
+            LOG.error(message);
+            throw new RuntimeException(message);
           }
           bigQuery.delete(datasetId);
         }
@@ -307,11 +346,12 @@ public class BigQueryEventConsumer implements EventConsumer {
         table = bigQuery.getTable(tableId);
         if (table != null) {
           if (requireManualDrops) {
-            throw new RuntimeException(
-              String.format("Encountered an event to drop table '%s' in dataset '%s' in project '%s', " +
-                              "but the target is configured to require manual drops. " +
-                              "Please manually drop the table to make progress.",
-                            normalizedTableName, normalizedDatabaseName, project));
+            String message = String.format("Encountered an event to drop table '%s' in dataset '%s' in project '%s', " +
+                                             "but the target is configured to require manual drops. " +
+                                             "Please manually drop the table to make progress.",
+                                           normalizedTableName, normalizedDatabaseName, project);
+            LOG.error(message);
+            throw new RuntimeException(message);
           }
           bigQuery.delete(tableId);
         }
@@ -370,18 +410,6 @@ public class BigQueryEventConsumer implements EventConsumer {
         tableInfo = builder.build();
         bigQuery.create(tableInfo);
         break;
-    }
-    latestOffset = event.getOffset();
-    latestSequenceNum = sequencedEvent.getSequenceNumber();
-    if (normalizedTableName != null) {
-      latestSeenSequence.put(TableId.of(project, normalizedDatabaseName, normalizedTableName),
-                             sequencedEvent.getSequenceNumber());
-    }
-    context.incrementCount(event.getOperation());
-    if (event.isSnapshot()) {
-      context.setTableSnapshotting(normalizedDatabaseName, normalizedTableName);
-    } else {
-      context.setTableReplicating(normalizedDatabaseName, normalizedTableName);
     }
   }
 
@@ -718,7 +746,8 @@ public class BigQueryEventConsumer implements EventConsumer {
 
   private void runWithRetries(ContextualRunnable runnable, TableBlob blob, String onFailedAttemptMessage,
                               String retriesExhaustedMessage) throws DeltaFailureException, InterruptedException {
-    RetryPolicy<Object> retryPolicy = createBaseRetryPolicy()
+    long baseDelay = Math.min(91, context.getMaxRetrySeconds()) - 1;
+    RetryPolicy<Object> retryPolicy = createBaseRetryPolicy(baseDelay)
       .onFailedAttempt(failureContext -> {
         Throwable t = failureContext.getLastFailure();
         LOG.error(onFailedAttemptMessage, t);
@@ -743,12 +772,15 @@ public class BigQueryEventConsumer implements EventConsumer {
       if (e.getCause() instanceof InterruptedException) {
         throw (InterruptedException) e.getCause();
       }
+      if (e.getCause() instanceof DeltaFailureException) {
+        throw (DeltaFailureException) e.getCause();
+      }
       throw e;
     }
   }
 
   private long getLatestSequenceNum(TableId tableId) throws InterruptedException, DeltaFailureException {
-    RetryPolicy<Object> retryPolicy = createBaseRetryPolicy()
+    RetryPolicy<Object> retryPolicy = createBaseRetryPolicy(baseRetryDelay)
       .onFailedAttempt(failureContext -> {
         Throwable t = failureContext.getLastFailure();
         LOG.error("Failed to read maximum sequence number from {}.{}.", tableId.getDataset(), tableId.getTable(), t);
@@ -835,13 +867,12 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
   }
 
-  private <T> RetryPolicy<T> createBaseRetryPolicy() {
+  private <T> RetryPolicy<T> createBaseRetryPolicy(long baseDelay) {
     RetryPolicy<T> retryPolicy = new RetryPolicy<>();
     if (context.getMaxRetrySeconds() < 1) {
       return retryPolicy.withMaxAttempts(1);
     }
 
-    long baseDelay = Math.min(91, context.getMaxRetrySeconds()) - 1;
     long maxDelay = Math.max(baseDelay + 1, loadIntervalSeconds);
     return retryPolicy.withMaxAttempts(Integer.MAX_VALUE)
       .withBackoff(baseDelay, maxDelay, ChronoUnit.SECONDS);

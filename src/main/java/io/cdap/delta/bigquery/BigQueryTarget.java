@@ -105,7 +105,7 @@ public class BigQueryTarget implements DeltaTarget {
 
     return new BigQueryEventConsumer(context, storage, bigQuery, bucket, project,
                                      conf.getLoadIntervalSeconds(), conf.getStagingTablePrefix(),
-                                     conf.requiresManualDrops(), encryptionConfig);
+                                     conf.requiresManualDrops(), encryptionConfig, null);
   }
 
   @Override
