@@ -31,10 +31,15 @@ import java.util.Map;
 import javax.annotation.Nullable;
 
 /**
- * No-op version of the context.
+ * Mock version of the context.
  */
-public class NoOpContext implements DeltaTargetContext {
-  public static final DeltaTargetContext INSTANCE = new NoOpContext();
+public class MockContext implements DeltaTargetContext {
+  public static final DeltaTargetContext INSTANCE = new MockContext(0);
+  private final int maxRetrySeconds;
+
+  public MockContext(int maxRetrySeconds) {
+    this.maxRetrySeconds = maxRetrySeconds;
+  }
 
   @Override
   public void incrementCount(DMLOperation dmlOperation) {
@@ -98,7 +103,7 @@ public class NoOpContext implements DeltaTargetContext {
 
   @Override
   public int getMaxRetrySeconds() {
-    return 0;
+    return maxRetrySeconds;
   }
 
   @Nullable

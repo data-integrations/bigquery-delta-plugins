@@ -105,12 +105,12 @@ public class BigQueryTarget implements DeltaTarget {
 
     return new BigQueryEventConsumer(context, storage, bigQuery, bucket, project,
                                      conf.getLoadIntervalSeconds(), conf.getStagingTablePrefix(),
-                                     conf.requiresManualDrops(), encryptionConfig);
+                                     conf.requiresManualDrops(), encryptionConfig, null);
   }
 
   @Override
   public TableAssessor<StandardizedTableDetail> createTableAssessor(Configurer configurer) {
-    return new BigQueryAssessor(conf.stagingTablePrefix, conf.loadInterval);
+    return new BigQueryAssessor(conf.stagingTablePrefix);
   }
 
   /**
