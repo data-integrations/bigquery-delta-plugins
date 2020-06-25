@@ -642,7 +642,7 @@ public class BigQueryEventConsumer implements EventConsumer {
                                  int attemptNumber) throws InterruptedException, IOException, DeltaFailureException {
     LOG.debug("Merging batch {} for {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
     TableId targetTableId = TableId.of(project, blob.getDataset(), blob.getTable());
-    List<String> primaryKey = getPrimaryKeys(targetTableId);
+    List<String> primaryKeys = getPrimaryKeys(targetTableId);
     /*
      * Merge data from staging BQ table into target table.
      *
@@ -708,12 +708,12 @@ public class BigQueryEventConsumer implements EventConsumer {
       " WHERE _batch_id = " + blob.getBatchId() +
       " AND _sequence_num > " + latestMergedSequence.get(targetTableId) + ") as B\n" +
       "ON " +
-      primaryKey.stream()
+      primaryKeys.stream()
         .map(name -> String.format("A.%s = B._before_%s", name, name))
         .collect(Collectors.joining(" AND ")) +
       " AND A._sequence_num < B._sequence_num\n" +
       "WHERE " +
-      primaryKey.stream()
+      primaryKeys.stream()
         .map(name -> String.format("B._before_%s IS NULL", name))
         .collect(Collectors.joining(" AND "));
 
@@ -732,7 +732,7 @@ public class BigQueryEventConsumer implements EventConsumer {
       targetTableId.getDataset() + "." + targetTableId.getTable() + " as T\n" +
       "USING (" + diffQuery + ") as D\n" +
       "ON " +
-      primaryKey.stream()
+      primaryKeys.stream()
         .map(name -> String.format("T.%s = D._before_%s", name, name))
         .collect(Collectors.joining(" AND ")) + "\n" +
       "WHEN MATCHED AND D._op = \"DELETE\" THEN\n" +
