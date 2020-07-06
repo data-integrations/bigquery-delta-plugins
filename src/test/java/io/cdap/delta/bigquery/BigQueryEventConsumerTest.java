@@ -174,7 +174,7 @@ public class BigQueryEventConsumerTest {
     StandardTableDefinition tableDefinition = table.getDefinition();
     Clustering clustering = tableDefinition.getClustering();
     Assert.assertNotNull(clustering);
-    Assert.assertEquals(clustering.getFields(), primaryKeys.subList(0, 4));
+    Assert.assertEquals(primaryKeys.subList(0, 4), clustering.getFields());
     bigQuery.delete(tableId);
     cleanupTest(bucket, dataset, eventConsumer);
   }
