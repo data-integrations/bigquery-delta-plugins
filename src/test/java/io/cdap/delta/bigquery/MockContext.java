@@ -34,11 +34,13 @@ import javax.annotation.Nullable;
  * Mock version of the context.
  */
 public class MockContext implements DeltaTargetContext {
-  public static final DeltaTargetContext INSTANCE = new MockContext(0);
+  public static final DeltaTargetContext INSTANCE = new MockContext(0, new HashMap());
   private final int maxRetrySeconds;
+  private final Map runtimeArguments;
 
-  public MockContext(int maxRetrySeconds) {
+  public MockContext(int maxRetrySeconds, Map runtimeArguments) {
     this.maxRetrySeconds = maxRetrySeconds;
+    this.runtimeArguments = runtimeArguments;
   }
 
   @Override
@@ -93,7 +95,7 @@ public class MockContext implements DeltaTargetContext {
 
   @Override
   public Map<String, String> getRuntimeArguments() {
-    return new HashMap<>();
+    return runtimeArguments;
   }
 
   @Override
