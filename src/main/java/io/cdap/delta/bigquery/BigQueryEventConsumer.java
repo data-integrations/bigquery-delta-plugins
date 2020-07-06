@@ -156,7 +156,6 @@ import javax.annotation.Nullable;
 public class BigQueryEventConsumer implements EventConsumer {
   private static final Logger LOG = LoggerFactory.getLogger(BigQueryEventConsumer.class);
   private static final int MAX_LENGTH = 1024;
-  private static final int MAX_CLUSTERING_COLUMNS = 4;
   // according to big query dataset and table naming convention, valid name should only contain letters (upper or
   // lower case), numbers, and underscores
   private static final String VALID_NAME_REGEX = "[\\w]+";
@@ -177,6 +176,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final Map<TableId, List<String>> primaryKeyStore;
   private final boolean requireManualDrops;
   private final long baseRetryDelay;
+  private final Integer maxClusteringColumns;
   private ScheduledExecutorService scheduledExecutorService;
   private ScheduledFuture<?> scheduledFlush;
   private ExecutorService executorService;
@@ -220,6 +220,8 @@ public class BigQueryEventConsumer implements EventConsumer {
                                         String.format("cdap/delta/%s/", context.getApplicationName()),
                                         context, executorService);
     this.baseRetryDelay = baseRetryDelay == null ? 10L : baseRetryDelay;
+    String maxClusteringColumnsStr = context.getRuntimeArguments().get("gcp.bigquery.max.clustering.columns");
+    this.maxClusteringColumns =  maxClusteringColumnsStr == null ? null : Integer.valueOf(maxClusteringColumnsStr);
   }
 
   @Override
@@ -328,9 +330,10 @@ public class BigQueryEventConsumer implements EventConsumer {
         updatePrimaryKeys(tableId, primaryKeys);
         // TODO: check schema of table if it exists already
         if (table == null) {
-          Clustering clustering = Clustering.newBuilder()
-            .setFields(primaryKeys.subList(0, Math.min(MAX_CLUSTERING_COLUMNS, primaryKeys.size())))
-            .build();
+          Clustering clustering = maxClusteringColumns == null ? null :
+            Clustering.newBuilder()
+              .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
+              .build();
           TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
             .setSchema(Schemas.convert(addSequenceNumber(event.getSchema())))
             .setClustering(clustering)
@@ -376,9 +379,10 @@ public class BigQueryEventConsumer implements EventConsumer {
         tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
         table = bigQuery.getTable(tableId);
         primaryKeys = event.getPrimaryKey();
-        Clustering clustering = Clustering.newBuilder()
-          .setFields(primaryKeys.subList(0, Math.min(MAX_CLUSTERING_COLUMNS, primaryKeys.size())))
-          .build();
+        Clustering clustering = maxClusteringColumns == null ? null :
+          Clustering.newBuilder()
+            .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
+            .build();
         TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
           .setSchema(Schemas.convert(addSequenceNumber(event.getSchema())))
           .setClustering(clustering)
@@ -411,9 +415,10 @@ public class BigQueryEventConsumer implements EventConsumer {
           bigQuery.delete(tableId);
         } else {
           primaryKeys = event.getPrimaryKey();
-          clustering = Clustering.newBuilder()
-            .setFields(primaryKeys.subList(0, Math.min(MAX_CLUSTERING_COLUMNS, primaryKeys.size())))
-            .build();
+          clustering = maxClusteringColumns == null ? null :
+            Clustering.newBuilder()
+              .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
+              .build();
           tableDefinition = StandardTableDefinition.newBuilder()
             .setSchema(Schemas.convert(addSequenceNumber(event.getSchema())))
             .setClustering(clustering)
@@ -598,8 +603,8 @@ public class BigQueryEventConsumer implements EventConsumer {
     Table stagingTable = bigQuery.getTable(stagingTableId);
     if (stagingTable == null) {
       List<String> primaryKeys = getPrimaryKeys(TableId.of(project, blob.getDataset(), blob.getTable()));
-      Clustering clustering = Clustering.newBuilder()
-        .setFields(primaryKeys.subList(0, Math.min(MAX_CLUSTERING_COLUMNS, primaryKeys.size())))
+      Clustering clustering = maxClusteringColumns == null ? null : Clustering.newBuilder()
+        .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
         .build();
       TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
         .setLocation(bucket.getLocation())
