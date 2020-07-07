@@ -20,6 +20,7 @@ import com.google.auth.Credentials;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryOptions;
+import com.google.cloud.bigquery.Clustering;
 import com.google.cloud.bigquery.Dataset;
 import com.google.cloud.bigquery.DatasetInfo;
 import com.google.cloud.bigquery.Field;
@@ -63,10 +64,13 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -131,13 +135,58 @@ public class BigQueryEventConsumerTest {
   }
 
   @Test
+  public void testCreateTableWithClustering() throws Exception {
+    String bucketName = "bqtest-" + UUID.randomUUID().toString();
+    Bucket bucket = storage.create(BucketInfo.of(bucketName));
+    Map<String, String> runtimeArguments = new HashMap<>();
+    runtimeArguments.put("gcp.bigquery.max.clustering.columns", "4");
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(new MockContext(300, runtimeArguments),
+                                                                    storage, bigQuery, bucket, project, 0,
+                                                                    STAGING_TABLE_PREFIX, true, null, 1L);
+    String dataset = "testTableCreationWithClustering";
+    String tableName = "users";
+    List<String> primaryKeys = new ArrayList<>();
+    primaryKeys.add("id1");
+    primaryKeys.add("id2");
+    primaryKeys.add("id3");
+    primaryKeys.add("id4");
+    primaryKeys.add("id5");
+    Schema schema = Schema.recordOf(tableName,
+                                    Schema.Field.of("id1", Schema.of(Schema.Type.INT)),
+                                    Schema.Field.of("id2", Schema.of(Schema.Type.INT)),
+                                    Schema.Field.of("id3", Schema.of(Schema.Type.INT)),
+                                    Schema.Field.of("id4", Schema.of(Schema.Type.INT)),
+                                    Schema.Field.of("id5", Schema.of(Schema.Type.INT)));
+    TableId tableId = TableId.of(dataset, tableName);
+
+    bigQuery.create(DatasetInfo.newBuilder(dataset).build());
+    DDLEvent createTable = DDLEvent.builder()
+      .setOperation(DDLOperation.CREATE_TABLE)
+      .setDatabase(dataset)
+      .setTable(tableName)
+      .setSchema(schema)
+      .setPrimaryKey(primaryKeys)
+      .setOffset(new Offset())
+      .build();
+    eventConsumer.applyDDL(new Sequenced<>(createTable, 0));
+
+    Table table = bigQuery.getTable(tableId);
+    StandardTableDefinition tableDefinition = table.getDefinition();
+    Clustering clustering = tableDefinition.getClustering();
+    Assert.assertNotNull(clustering);
+    Assert.assertEquals(primaryKeys.subList(0, 4), clustering.getFields());
+    bigQuery.delete(tableId);
+    cleanupTest(bucket, dataset, eventConsumer);
+  }
+
+  @Test
   public void testManualDropRetries() throws Exception {
     String bucketName = "bqtest-" + UUID.randomUUID().toString();
     Bucket bucket = storage.create(BucketInfo.of(bucketName));
 
-    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(new MockContext(300), storage, bigQuery, bucket,
-                                                                    project, 0, STAGING_TABLE_PREFIX, true, null,
-                                                                    1L);
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(new MockContext(300, new HashMap()),
+                                                                    storage, bigQuery, bucket, project, 0,
+                                                                    STAGING_TABLE_PREFIX, true, null, 1L);
 
     String dataset = "testManualDropRetries";
     String tableName = "users";
@@ -239,8 +288,6 @@ public class BigQueryEventConsumerTest {
       // manually drop the dataset and replay the event, which should now succeed
       bigQuery.delete(dataset);
       eventConsumer.applyDDL(new Sequenced<>(dropDatabase, 2));
-
-
     } finally {
       cleanupTest(bucket, dataset, eventConsumer);
     }

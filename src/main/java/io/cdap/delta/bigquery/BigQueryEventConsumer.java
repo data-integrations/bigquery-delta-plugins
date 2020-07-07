@@ -17,6 +17,7 @@
 package io.cdap.delta.bigquery;
 
 import com.google.cloud.bigquery.BigQuery;
+import com.google.cloud.bigquery.Clustering;
 import com.google.cloud.bigquery.DatasetId;
 import com.google.cloud.bigquery.DatasetInfo;
 import com.google.cloud.bigquery.EncryptionConfiguration;
@@ -175,6 +176,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final Map<TableId, List<String>> primaryKeyStore;
   private final boolean requireManualDrops;
   private final long baseRetryDelay;
+  private final int maxClusteringColumns;
   private ScheduledExecutorService scheduledExecutorService;
   private ScheduledFuture<?> scheduledFlush;
   private ExecutorService executorService;
@@ -218,6 +220,10 @@ public class BigQueryEventConsumer implements EventConsumer {
                                         String.format("cdap/delta/%s/", context.getApplicationName()),
                                         context, executorService);
     this.baseRetryDelay = baseRetryDelay == null ? 10L : baseRetryDelay;
+    String maxClusteringColumnsStr = context.getRuntimeArguments().get("gcp.bigquery.max.clustering.columns");
+    // current max clustering columns is set as 4 in big query side, use that as default max value
+    // https://cloud.google.com/bigquery/docs/creating-clustered-tables#limitations
+    this.maxClusteringColumns = maxClusteringColumnsStr == null ? 4 : Integer.parseInt(maxClusteringColumnsStr);
   }
 
   @Override
@@ -322,11 +328,17 @@ public class BigQueryEventConsumer implements EventConsumer {
       case CREATE_TABLE:
         TableId tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
         Table table = bigQuery.getTable(tableId);
-        updatePrimaryKey(tableId, event.getPrimaryKey());
+        List<String> primaryKeys = event.getPrimaryKey();
+        updatePrimaryKeys(tableId, primaryKeys);
         // TODO: check schema of table if it exists already
         if (table == null) {
+          Clustering clustering = maxClusteringColumns <= 0 ? null :
+            Clustering.newBuilder()
+              .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
+              .build();
           TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
             .setSchema(Schemas.convert(addSequenceNumber(event.getSchema())))
+            .setClustering(clustering)
             .build();
 
           TableInfo.Builder builder = TableInfo.newBuilder(tableId, tableDefinition);
@@ -368,8 +380,14 @@ public class BigQueryEventConsumer implements EventConsumer {
         // after a flush, the staging table will be gone, so no need to alter it.
         tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
         table = bigQuery.getTable(tableId);
+        primaryKeys = event.getPrimaryKey();
+        Clustering clustering = maxClusteringColumns <= 0 ? null :
+          Clustering.newBuilder()
+            .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
+            .build();
         TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
           .setSchema(Schemas.convert(addSequenceNumber(event.getSchema())))
+          .setClustering(clustering)
           .build();
         TableInfo.Builder builder = TableInfo.newBuilder(tableId, tableDefinition);
         if (encryptionConfig != null) {
@@ -382,7 +400,7 @@ public class BigQueryEventConsumer implements EventConsumer {
           bigQuery.update(tableInfo);
         }
 
-        updatePrimaryKey(tableId, event.getPrimaryKey());
+        updatePrimaryKeys(tableId, primaryKeys);
         break;
       case RENAME_TABLE:
         // TODO: flush changes, execute a copy job, delete previous table, drop old staging table, remove old entry
@@ -398,8 +416,14 @@ public class BigQueryEventConsumer implements EventConsumer {
           tableDefinition = table.getDefinition();
           bigQuery.delete(tableId);
         } else {
+          primaryKeys = event.getPrimaryKey();
+          clustering = maxClusteringColumns <= 0 ? null :
+            Clustering.newBuilder()
+              .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
+              .build();
           tableDefinition = StandardTableDefinition.newBuilder()
             .setSchema(Schemas.convert(addSequenceNumber(event.getSchema())))
+            .setClustering(clustering)
             .build();
         }
 
@@ -413,7 +437,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
   }
 
-  private void updatePrimaryKey(TableId tableId, List<String> primaryKeys) throws DeltaFailureException, IOException {
+  private void updatePrimaryKeys(TableId tableId, List<String> primaryKeys) throws DeltaFailureException, IOException {
     if (primaryKeys.isEmpty()) {
       throw new DeltaFailureException(
         String.format("Table '%s' in database '%s' has no primary key. Tables without a primary key are" +
@@ -426,6 +450,23 @@ public class BigQueryEventConsumer implements EventConsumer {
     primaryKeyStore.put(tableId, primaryKeys);
     context.putState(String.format("bigquery-%s-%s", tableId.getDataset(), tableId.getTable()),
                      Bytes.toBytes(GSON.toJson(new BigQueryTableState(primaryKeys))));
+  }
+
+  private List<String> getPrimaryKeys(TableId targetTableId) throws IOException, DeltaFailureException {
+    List<String> primaryKeys = primaryKeyStore.get(targetTableId);
+    if (primaryKeys == null) {
+      byte[] stateBytes = context.getState(
+        String.format("bigquery-%s-%s", targetTableId.getDataset(), targetTableId.getTable()));
+      if (stateBytes == null) {
+        throw new DeltaFailureException(
+          String.format("Primary key information for table '%s' in dataset '%s' could not be found. This can only " +
+                          "happen if state was corrupted. Please create a new replicator and start again.",
+                        targetTableId.getTable(), targetTableId.getDataset()));
+      }
+      BigQueryTableState targetTableState = GSON.fromJson(new String(stateBytes), BigQueryTableState.class);
+      primaryKeys = targetTableState.getPrimaryKeys();
+    }
+    return primaryKeys;
   }
 
   private Schema addSequenceNumber(Schema original) {
@@ -557,14 +598,20 @@ public class BigQueryEventConsumer implements EventConsumer {
     bigQuery.delete(stagingTableId);
   }
 
-  private void loadStagingTable(TableId stagingTableId, TableBlob blob, int attemptNumber) throws InterruptedException {
+  private void loadStagingTable(TableId stagingTableId, TableBlob blob, int attemptNumber)
+    throws InterruptedException, IOException, DeltaFailureException {
     LOG.debug("Loading batch {} of {} events into staging table for {}.{}",
               blob.getBatchId(), blob.getNumEvents(), blob.getDataset(), blob.getTable());
     Table stagingTable = bigQuery.getTable(stagingTableId);
     if (stagingTable == null) {
+      List<String> primaryKeys = getPrimaryKeys(TableId.of(project, blob.getDataset(), blob.getTable()));
+      Clustering clustering = maxClusteringColumns <= 0 ? null : Clustering.newBuilder()
+        .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
+        .build();
       TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
         .setLocation(bucket.getLocation())
         .setSchema(Schemas.convert(blob.getStagingSchema()))
+        .setClustering(clustering)
         .build();
       TableInfo.Builder builder = TableInfo.newBuilder(stagingTableId, tableDefinition);
       if (encryptionConfig != null) {
@@ -602,19 +649,7 @@ public class BigQueryEventConsumer implements EventConsumer {
                                  int attemptNumber) throws InterruptedException, IOException, DeltaFailureException {
     LOG.debug("Merging batch {} for {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
     TableId targetTableId = TableId.of(project, blob.getDataset(), blob.getTable());
-    List<String> primaryKey = primaryKeyStore.get(targetTableId);
-    if (primaryKey == null) {
-      byte[] stateBytes = context.getState(
-        String.format("bigquery-%s-%s", targetTableId.getDataset(), targetTableId.getTable()));
-      if (stateBytes == null) {
-        throw new DeltaFailureException(
-          String.format("Primary key information for table '%s' in dataset '%s' could not be found. This can only " +
-                          "happen if state was corrupted. Please create a new replicator and start again.",
-                        targetTableId.getTable(), targetTableId.getDataset()));
-      }
-      BigQueryTableState targetTableState = GSON.fromJson(new String(stateBytes), BigQueryTableState.class);
-      primaryKey = targetTableState.getPrimaryKeys();
-    }
+    List<String> primaryKeys = getPrimaryKeys(targetTableId);
     /*
      * Merge data from staging BQ table into target table.
      *
@@ -680,12 +715,12 @@ public class BigQueryEventConsumer implements EventConsumer {
       " WHERE _batch_id = " + blob.getBatchId() +
       " AND _sequence_num > " + latestMergedSequence.get(targetTableId) + ") as B\n" +
       "ON " +
-      primaryKey.stream()
+      primaryKeys.stream()
         .map(name -> String.format("A.%s = B._before_%s", name, name))
         .collect(Collectors.joining(" AND ")) +
       " AND A._sequence_num < B._sequence_num\n" +
       "WHERE " +
-      primaryKey.stream()
+      primaryKeys.stream()
         .map(name -> String.format("B._before_%s IS NULL", name))
         .collect(Collectors.joining(" AND "));
 
@@ -704,7 +739,7 @@ public class BigQueryEventConsumer implements EventConsumer {
       targetTableId.getDataset() + "." + targetTableId.getTable() + " as T\n" +
       "USING (" + diffQuery + ") as D\n" +
       "ON " +
-      primaryKey.stream()
+      primaryKeys.stream()
         .map(name -> String.format("T.%s = D._before_%s", name, name))
         .collect(Collectors.joining(" AND ")) + "\n" +
       "WHEN MATCHED AND D._op = \"DELETE\" THEN\n" +
