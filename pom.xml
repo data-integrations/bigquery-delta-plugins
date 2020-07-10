@@ -30,7 +30,7 @@
     <avro.version>1.8.2</avro.version>
     <bigquery.version>1.78.0</bigquery.version>
     <cdap.version>6.2.0</cdap.version>
-    <delta.version>0.1.0</delta.version>
+    <delta.version>0.1.1</delta.version>
     <failsafe.version>2.3.3</failsafe.version>
     <gcs.version>1.78.0</gcs.version>
     <logback.version>1.2.3</logback.version>
