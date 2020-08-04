@@ -25,6 +25,33 @@
   <version>0.1.1</version>
   <name>BigQuery Delta plugins</name>
   <packaging>jar</packaging>
+  <description>BigQuery Delta plugins</description>
+  <url>https://github.com/data-integrations/bigquery-delta-plugins</url>
+
+  <licenses>
+    <license>
+      <name>The Apache Software License, Version 2.0</name>
+      <url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
+      <distribution>repo</distribution>
+      <comments>A business-friendly OSS license</comments>
+    </license>
+  </licenses>
+
+  <developers>
+    <developer>
+      <name>CDAP</name>
+      <email>cdap-dev@googlegroups.com</email>
+      <organization>CDAP</organization>
+      <organizationUrl>http://cdap.io</organizationUrl>
+    </developer>
+  </developers>
+
+  <scm>
+    <connection>scm:git:https://github.com/data-integrations/bigquery-delta-plugins.git</connection>
+    <developerConnection>scm:git:git@github.com:data-integrations/bigquery-delta-plugins.git</developerConnection>
+    <url>https://github.com/data-integrations/bigquery-delta-plugins.git</url>
+    <tag>HEAD</tag>
+  </scm>
 
   <properties>
     <avro.version>1.8.2</avro.version>
