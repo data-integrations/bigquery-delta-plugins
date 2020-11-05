@@ -44,12 +44,12 @@ public class MockContext implements DeltaTargetContext {
   }
 
   @Override
-  public void incrementCount(DMLOperation dmlOperation) {
+  public void incrementCount(DMLOperation operation) {
     // no-op
   }
 
   @Override
-  public void incrementCount(DDLOperation ddlOperation) {
+  public void incrementCount(DDLOperation operation) {
     // no-op
   }
 

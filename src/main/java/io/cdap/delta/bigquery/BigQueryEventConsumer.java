@@ -43,6 +43,7 @@ import com.google.gson.Gson;
 import io.cdap.cdap.api.common.Bytes;
 import io.cdap.cdap.api.data.schema.Schema;
 import io.cdap.delta.api.DDLEvent;
+import io.cdap.delta.api.DDLOperation;
 import io.cdap.delta.api.DMLEvent;
 import io.cdap.delta.api.DeltaFailureException;
 import io.cdap.delta.api.DeltaTargetContext;
@@ -262,8 +263,9 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
 
     DDLEvent event = sequencedEvent.getEvent();
+    DDLOperation ddlOperation = event.getOperation();
     String normalizedDatabaseName = normalize(event.getDatabase());
-    String normalizedTableName = normalize(event.getTable());
+    String normalizedTableName = normalize(ddlOperation.getTableName());
     String normalizedStagingTableName = normalizedTableName == null ? null :
       normalize(stagingTablePrefix + normalizedTableName);
 
@@ -302,7 +304,7 @@ public class BigQueryEventConsumer implements EventConsumer {
                          String normalizedStagingTableName)
     throws IOException, DeltaFailureException, InterruptedException {
 
-    switch (event.getOperation()) {
+    switch (event.getOperation().getType()) {
       case CREATE_DATABASE:
         DatasetId datasetId = DatasetId.of(project, normalizedDatabaseName);
         if (bigQuery.getDataset(datasetId) == null) {
@@ -406,7 +408,7 @@ public class BigQueryEventConsumer implements EventConsumer {
         // TODO: flush changes, execute a copy job, delete previous table, drop old staging table, remove old entry
         //  in primaryKeyStore, put new entry in primaryKeyStore
         LOG.warn("Rename DDL events are not supported. Ignoring rename event in database {} from table {} to table {}.",
-                 event.getDatabase(), event.getPrevTable(), event.getTable());
+                 event.getDatabase(), event.getOperation().getPrevTableName(), event.getOperation().getTableName());
         break;
       case TRUNCATE_TABLE:
         flush();
@@ -497,7 +499,7 @@ public class BigQueryEventConsumer implements EventConsumer {
 
     DMLEvent event = sequencedEvent.getEvent();
     String normalizedDatabaseName = normalize(event.getDatabase());
-    String normalizedTableName = normalize(event.getTable());
+    String normalizedTableName = normalize(event.getOperation().getTableName());
     DMLEvent normalizedDMLEvent = DMLEvent.builder(event)
       .setDatabase(normalizedDatabaseName)
       .setTable(normalizedTableName)

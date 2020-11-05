@@ -23,6 +23,7 @@ import com.google.cloud.storage.Storage;
 import io.cdap.cdap.api.data.format.StructuredRecord;
 import io.cdap.cdap.api.data.schema.Schema;
 import io.cdap.delta.api.DMLEvent;
+import io.cdap.delta.api.DMLOperation;
 import io.cdap.delta.api.DeltaTargetContext;
 import io.cdap.delta.api.ReplicationError;
 import io.cdap.delta.api.Sequenced;
@@ -70,8 +71,10 @@ public class MultiGCSWriter {
 
   public synchronized void write(Sequenced<DMLEvent> sequencedEvent) {
     DMLEvent event = sequencedEvent.getEvent();
-    Key key = new Key(event.getDatabase(), event.getTable());
-    TableObject tableObject = objects.computeIfAbsent(key, t -> new TableObject(event.getDatabase(), event.getTable()));
+    DMLOperation dmlOperation = event.getOperation();
+    Key key = new Key(event.getDatabase(), dmlOperation.getTableName());
+    TableObject tableObject = objects.computeIfAbsent(key, t -> new TableObject(event.getDatabase(),
+                                                                                dmlOperation.getTableName()));
     try {
       tableObject.writeEvent(sequencedEvent);
     } catch (IOException e) {
@@ -269,7 +272,7 @@ public class MultiGCSWriter {
       DMLEvent event = sequencedEvent.getEvent();
       StructuredRecord row = event.getRow();
       StructuredRecord.Builder builder = StructuredRecord.builder(stagingSchema);
-      builder.set("_op", event.getOperation().name());
+      builder.set("_op", event.getOperation().getType().name());
       builder.set("_batch_id", batchId);
       builder.set("_sequence_num", sequencedEvent.getSequenceNumber());
       for (Schema.Field field : row.getSchema().getFields()) {
@@ -277,7 +280,7 @@ public class MultiGCSWriter {
       }
 
       StructuredRecord beforeRow = null;
-      switch (event.getOperation()) {
+      switch (event.getOperation().getType()) {
         case UPDATE:
           beforeRow = event.getPreviousRow();
           if (beforeRow == null) {
@@ -285,7 +288,7 @@ public class MultiGCSWriter {
             throw new IllegalStateException(String.format(
               "Encountered an update event for %s.%s that did not include the previous column values. "
                 + "Previous column values are required for replication.",
-              event.getDatabase(), event.getTable()));
+              event.getDatabase(), event.getOperation().getTableName()));
           }
           break;
         case DELETE:

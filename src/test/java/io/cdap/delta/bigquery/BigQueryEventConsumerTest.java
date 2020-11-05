@@ -161,7 +161,7 @@ public class BigQueryEventConsumerTest {
 
     bigQuery.create(DatasetInfo.newBuilder(dataset).build());
     DDLEvent createTable = DDLEvent.builder()
-      .setOperation(DDLOperation.CREATE_TABLE)
+      .setOperation(DDLOperation.Type.CREATE_TABLE)
       .setDatabase(dataset)
       .setTable(tableName)
       .setSchema(schema)
@@ -197,7 +197,7 @@ public class BigQueryEventConsumerTest {
       bigQuery.create(TableInfo.newBuilder(tableId, StandardTableDefinition.newBuilder().build()).build());
 
       DDLEvent dropTable = DDLEvent.builder()
-        .setOperation(DDLOperation.DROP_TABLE)
+        .setOperation(DDLOperation.Type.DROP_TABLE)
         .setDatabase(dataset)
         .setTable(tableName)
         .setOffset(new Offset())
@@ -241,7 +241,7 @@ public class BigQueryEventConsumerTest {
 
       // dropping a table that doesn't exist should be fine
       DDLEvent dropTable = DDLEvent.builder()
-        .setOperation(DDLOperation.DROP_TABLE)
+        .setOperation(DDLOperation.Type.DROP_TABLE)
         .setDatabase(dataset)
         .setTable(UUID.randomUUID().toString())
         .setOffset(new Offset())
@@ -249,7 +249,7 @@ public class BigQueryEventConsumerTest {
       eventConsumer.applyDDL(new Sequenced<>(dropTable, 0));
 
       dropTable = DDLEvent.builder()
-        .setOperation(DDLOperation.DROP_TABLE)
+        .setOperation(DDLOperation.Type.DROP_TABLE)
         .setDatabase(dataset)
         .setTable(tableName)
         .setOffset(new Offset())
@@ -266,7 +266,7 @@ public class BigQueryEventConsumerTest {
       eventConsumer.applyDDL(new Sequenced<>(dropTable, 1));
 
       DDLEvent dropDatabase = DDLEvent.builder()
-        .setOperation(DDLOperation.DROP_DATABASE)
+        .setOperation(DDLOperation.Type.DROP_DATABASE)
         .setDatabase(UUID.randomUUID().toString())
         .setOffset(new Offset())
         .build();
@@ -274,7 +274,7 @@ public class BigQueryEventConsumerTest {
       eventConsumer.applyDDL(new Sequenced<>(dropDatabase, 2));
 
       dropDatabase = DDLEvent.builder()
-        .setOperation(DDLOperation.DROP_DATABASE)
+        .setOperation(DDLOperation.Type.DROP_DATABASE)
         .setDatabase(dataset)
         .setOffset(new Offset())
         .build();
@@ -320,7 +320,7 @@ public class BigQueryEventConsumerTest {
                         Schema.Field.of("age", Schema.nullableOf(Schema.of(Schema.Type.INT))),
                         Schema.Field.of("score", Schema.nullableOf(Schema.of(Schema.Type.DOUBLE))));
       DDLEvent alterEvent = DDLEvent.builder()
-        .setOperation(DDLOperation.ALTER_TABLE)
+        .setOperation(DDLOperation.Type.ALTER_TABLE)
         .setDatabase(dataset)
         .setTable(tableName)
         .setSchema(updatedSchema)
@@ -406,7 +406,7 @@ public class BigQueryEventConsumerTest {
       .build();
     for (String tableName : tableNames) {
       DMLEvent insert1Event = DMLEvent.builder()
-        .setOperation(DMLOperation.INSERT)
+        .setOperationType(DMLOperation.Type.INSERT)
         .setIngestTimestamp(0L)
         .setSnapshot(false)
         .setDatabase(dataset)
@@ -426,7 +426,7 @@ public class BigQueryEventConsumerTest {
       .build();
     for (String tableName : tableNames) {
       DMLEvent insert2Event = DMLEvent.builder()
-        .setOperation(DMLOperation.INSERT)
+        .setOperationType(DMLOperation.Type.INSERT)
         .setIngestTimestamp(1L)
         .setSnapshot(false)
         .setDatabase(dataset)
@@ -470,7 +470,7 @@ public class BigQueryEventConsumerTest {
       .build();
     for (String tableName : tableNames) {
       DMLEvent updateEvent = DMLEvent.builder()
-        .setOperation(DMLOperation.UPDATE)
+        .setOperationType(DMLOperation.Type.UPDATE)
         .setIngestTimestamp(2L)
         .setSnapshot(false)
         .setDatabase(dataset)
@@ -482,7 +482,7 @@ public class BigQueryEventConsumerTest {
       eventConsumer.applyDML(new Sequenced<>(updateEvent, sequenceNum++));
 
       DMLEvent deleteEvent = DMLEvent.builder()
-        .setOperation(DMLOperation.DELETE)
+        .setOperationType(DMLOperation.Type.DELETE)
         .setIngestTimestamp(3L)
         .setSnapshot(false)
         .setDatabase(dataset)
@@ -531,7 +531,7 @@ public class BigQueryEventConsumerTest {
       .build();
     for (String tableName : tableNames) {
       DMLEvent insert1Event = DMLEvent.builder()
-        .setOperation(DMLOperation.INSERT)
+        .setOperationType(DMLOperation.Type.INSERT)
         .setIngestTimestamp(0L)
         .setSnapshot(false)
         .setDatabase(dataset)
@@ -551,7 +551,7 @@ public class BigQueryEventConsumerTest {
       .build();
     for (String tableName : tableNames) {
       DMLEvent insert2Event = DMLEvent.builder()
-        .setOperation(DMLOperation.INSERT)
+        .setOperationType(DMLOperation.Type.INSERT)
         .setIngestTimestamp(1L)
         .setSnapshot(false)
         .setDatabase(dataset)
@@ -588,7 +588,7 @@ public class BigQueryEventConsumerTest {
 
     for (String tableName : tableNames) {
       DDLEvent truncateEvent = DDLEvent.builder()
-        .setOperation(DDLOperation.TRUNCATE_TABLE)
+        .setOperation(DDLOperation.Type.TRUNCATE_TABLE)
         .setSnapshot(false)
         .setDatabase(dataset)
         .setTable(tableName)
@@ -609,7 +609,7 @@ public class BigQueryEventConsumerTest {
     long sequenceNum = 1L;
     // test creation of dataset
     DDLEvent createDatabase = DDLEvent.builder()
-      .setOperation(DDLOperation.CREATE_DATABASE)
+      .setOperation(DDLOperation.Type.CREATE_DATABASE)
       .setDatabase(dataset)
       .build();
 
@@ -620,7 +620,7 @@ public class BigQueryEventConsumerTest {
     // test creation of tables
     for (String tableName : tableNames) {
       DDLEvent createEvent = DDLEvent.builder()
-        .setOperation(DDLOperation.CREATE_TABLE)
+        .setOperation(DDLOperation.Type.CREATE_TABLE)
         .setDatabase(dataset)
         .setTable(tableName)
         .setSchema(USER_SCHEMA)
