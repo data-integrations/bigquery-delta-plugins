@@ -25,6 +25,7 @@ import io.cdap.delta.api.DMLOperation;
 import io.cdap.delta.api.DeltaTargetContext;
 import io.cdap.delta.api.Offset;
 import io.cdap.delta.api.ReplicationError;
+import io.cdap.delta.api.SourceProperties;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -76,6 +77,11 @@ public class MockContext implements DeltaTargetContext {
   @Override
   public void dropTableState(String s, String s1) {
     // no-op
+  }
+
+  @Override
+  public SourceProperties getSourceProperties() {
+    return null;
   }
 
   @Override
