@@ -51,6 +51,7 @@ import io.cdap.delta.api.EventConsumer;
 import io.cdap.delta.api.Offset;
 import io.cdap.delta.api.ReplicationError;
 import io.cdap.delta.api.Sequenced;
+import io.cdap.delta.api.SourceProperties;
 import net.jodah.failsafe.Failsafe;
 import net.jodah.failsafe.FailsafeException;
 import net.jodah.failsafe.RetryPolicy;
@@ -78,6 +79,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import javax.annotation.Nullable;
 
@@ -178,6 +180,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final boolean requireManualDrops;
   private final long baseRetryDelay;
   private final int maxClusteringColumns;
+  private final SourceProperties.Ordering sourceEventOrdering;
   private ScheduledExecutorService scheduledExecutorService;
   private ScheduledFuture<?> scheduledFlush;
   private ExecutorService executorService;
@@ -225,6 +228,8 @@ public class BigQueryEventConsumer implements EventConsumer {
     // current max clustering columns is set as 4 in big query side, use that as default max value
     // https://cloud.google.com/bigquery/docs/creating-clustered-tables#limitations
     this.maxClusteringColumns = maxClusteringColumnsStr == null ? 4 : Integer.parseInt(maxClusteringColumnsStr);
+    this.sourceEventOrdering = context.getSourceProperties() == null ? SourceProperties.Ordering.ORDERED :
+      context.getSourceProperties().getOrdering();
   }
 
   @Override
@@ -339,7 +344,7 @@ public class BigQueryEventConsumer implements EventConsumer {
               .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
               .build();
           TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
-            .setSchema(Schemas.convert(addSequenceNumber(event.getSchema())))
+            .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema())))
             .setClustering(clustering)
             .build();
 
@@ -388,7 +393,7 @@ public class BigQueryEventConsumer implements EventConsumer {
             .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
             .build();
         TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
-          .setSchema(Schemas.convert(addSequenceNumber(event.getSchema())))
+          .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema())))
           .setClustering(clustering)
           .build();
         TableInfo.Builder builder = TableInfo.newBuilder(tableId, tableDefinition);
@@ -424,7 +429,7 @@ public class BigQueryEventConsumer implements EventConsumer {
               .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
               .build();
           tableDefinition = StandardTableDefinition.newBuilder()
-            .setSchema(Schemas.convert(addSequenceNumber(event.getSchema())))
+            .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema())))
             .setClustering(clustering)
             .build();
         }
@@ -471,9 +476,11 @@ public class BigQueryEventConsumer implements EventConsumer {
     return primaryKeys;
   }
 
-  private Schema addSequenceNumber(Schema original) {
-    List<Schema.Field> fields = new ArrayList<>(original.getFields().size() + 1);
-    fields.add(Schema.Field.of("_sequence_num", Schema.of(Schema.Type.LONG)));
+  private Schema addSupplementaryColumnsToTargetSchema(Schema original) {
+    List<Schema.Field> fields = new ArrayList<>(original.getFields().size() + 3);
+    fields.add(Schema.Field.of(Constants.SEQUENCE_NUM, Schema.of(Schema.Type.LONG)));
+    fields.add(Schema.Field.of(Constants.IS_DELETED, Schema.nullableOf(Schema.of(Schema.Type.BOOLEAN))));
+    fields.add(Schema.Field.of(Constants.ROW_ID, Schema.nullableOf(Schema.of(Schema.Type.STRING))));
     fields.addAll(original.getFields());
     return Schema.recordOf(original.getRecordName() + ".sequenced", fields);
   }
@@ -655,6 +662,10 @@ public class BigQueryEventConsumer implements EventConsumer {
     /*
      * Merge data from staging BQ table into target table.
      *
+     * Two independent cases to be considered while performing merge operation:
+     *
+     * Case 1: Source generates ordered events.
+     *
      * If the source table has two columns -- id and name -- the staging table will look something like:
      *
      * | _batch_id      | _sequence_num | _op    | _before_id | _before_name | id | name
@@ -698,70 +709,65 @@ public class BigQueryEventConsumer implements EventConsumer {
      * The $LATEST_APPLIED part of the query is required for idempotency. If a previous run of the pipeline merged
      * some results into the target table, but died before it could commit its offset, the merge query could end up
      * doing the wrong thing because what goes into a batch is not deterministic due to the time bound on batches.
-     */
-
-    /*
-     * SELECT A.* FROM
-     *   (SELECT * FROM [staging table] WHERE _batch_id = 1234567890 AND _sequence_num > $LATEST_APPLIED) as A
-     *   LEFT OUTER JOIN
-     *   (SELECT * FROM [staging table] WHERE _batch_id = 1234567890 AND _sequence_num > $LATEST_APPLIED) as B
-     *   ON A.id = B._before_id AND A._sequence_num < B._sequence_num
-     *   WHERE B._before_id IS NULL
-     */
-    String diffQuery = "SELECT A.* FROM\n" +
-      "(SELECT * FROM " + stagingTableId.getDataset() + "." + stagingTableId.getTable() +
-      " WHERE _batch_id = " + blob.getBatchId() +
-      " AND _sequence_num > " + latestMergedSequence.get(targetTableId) + ") as A\n" +
-      "LEFT OUTER JOIN\n" +
-      "(SELECT * FROM " + stagingTableId.getDataset() + "." + stagingTableId.getTable() +
-      " WHERE _batch_id = " + blob.getBatchId() +
-      " AND _sequence_num > " + latestMergedSequence.get(targetTableId) + ") as B\n" +
-      "ON " +
-      primaryKeys.stream()
-        .map(name -> String.format("A.%s = B._before_%s", name, name))
-        .collect(Collectors.joining(" AND ")) +
-      " AND A._sequence_num < B._sequence_num\n" +
-      "WHERE " +
-      primaryKeys.stream()
-        .map(name -> String.format("B._before_%s IS NULL", name))
-        .collect(Collectors.joining(" AND "));
-
-    /*
+     *
+     *
+     * Case 2: Source generates un-ordered events.
+     *
+     * If the source table has two columns -- id and name -- the staging table will look something like:
+     *
+     * | _batch_id      | _sequence_num     | _op    | _row_id | id | name
+     * | 1234567890     |       20          | INSERT |  ABCD   | 0  | alice
+     * | 1234567890     |       40          | UPDATE |  ABCD   | 2  | alice
+     * | 1234567890     |       50          | DELETE |  ABCD   | 2  | alice
+     * | 1234567890     |       60          | INSERT |  ABCD   | 0  | alice
+     * | 1234567890     |       70          | INSERT |  ABCE   | 1  | bob
+     * | 1234567890     |       30          | UPDATE |  ABCD   | 1  | alice
+     * | 1234567890     |       80          | UPDATE |  ABCE   | 1  | Bob
+     * | 1234567890     |       20          | INSERT |  ABCD   | 0  | alice
+     *
+     * Merge in this case is performed by running following query:
+     *
      * MERGE [target table] as T
-     * USING ($DIFF_QUERY) as D
-     * ON T.id = D._before_id
-     * WHEN MATCHED AND D._op = "DELETE" THEN
-     *   DELETE
-     * WHEN MATCHED AND D._op IN ("INSERT", "UPDATE") THEN
-     *   UPDATE id = D.id, name = D.name
-     * WHEN NOT MATCHED AND D._op IN ("INSERT", "UPDATE") THEN
-     *   INSERT (id, name) VALUES (id, name)
+     *  USING ($DIFF_QUERY) as D
+     * ON T.row_id = D.row_id
+     * WHEN MATCHED AND D.op = “DELETE”
+     *  UPDATE _is_deleted = true
+     * WHEN MATCHED AND D.op IN (“INSERT”, “UPDATE”)
+     *              AND D._sequence_num > T._sequence_num
+     *    UPDATE _sequence_num = D._sequence_num, id = D.id, name = D.name
+     * WHEN NOT MATCHED
+     *    INSERT (_sequence_num, _row_id, _is_deleted, id, name) VALUES
+     *           (D._sequence_num, D._row_id, false, D.id, D.name)
+     *
+     *
+     * where the $DIFF_QUERY is:
+     *
+     * SELECT A.* FROM
+     *      (SELECT * FROM [staging table]
+     *          WHERE batch_id = 12345 AND _sequence_num > $LATEST_APPLIED) as A
+     *      LEFT OUTER JOIN
+     *      (SELECT * FROM [staging table]
+     *          WHERE _batch_id = 12345 AND _sequence_num > $LATEST_APPLIED) as B
+     *      ON A._row_id = B._row_id AND A._sequence_num < B._sequence_num
+     * WHERE B._row_id IS NULL
+     *
+     * Similar to the case of ORDERED event, the above $DIFF_QUERY flattens events within same batch
+     * that have the same _row_id and finds out the latest event.
+     *
+     * The result of $DIFF_QUERY for the example above would be:
+     *
+     * | _batch_id      | _sequence_num     | _op    | _row_id | id | name
+     * | 1234567890     |       60          | INSERT |  ABCD   | 0  | alice
+     * | 1234567890     |       80          | UPDATE |  ABCE   | 1  | Bob
      */
-    String query = "MERGE " +
-      targetTableId.getDataset() + "." + targetTableId.getTable() + " as T\n" +
-      "USING (" + diffQuery + ") as D\n" +
-      "ON " +
-      primaryKeys.stream()
-        .map(name -> String.format("T.%s = D._before_%s", name, name))
-        .collect(Collectors.joining(" AND ")) + "\n" +
-      "WHEN MATCHED AND D._op = \"DELETE\" THEN\n" +
-      "  DELETE\n" +
-      "WHEN MATCHED AND D._op IN (\"INSERT\", \"UPDATE\") THEN\n" +
-      "  UPDATE SET " +
-      blob.getTargetSchema().getFields().stream()
-        .map(Schema.Field::getName)
-        .map(name -> String.format("%s = D.%s", name, name))
-        .collect(Collectors.joining(", ")) + "\n" +
-      "WHEN NOT MATCHED AND D._op IN (\"INSERT\", \"UPDATE\") THEN\n" +
-      "  INSERT (" +
-      blob.getTargetSchema().getFields()
-        .stream().map(Schema.Field::getName)
-        .collect(Collectors.joining(", ")) +
-      ") VALUES (" +
-      blob.getTargetSchema().getFields()
-        .stream().map(Schema.Field::getName)
-        .collect(Collectors.joining(", ")) + ")";
-    QueryJobConfiguration.Builder jobConfigBuilder = QueryJobConfiguration.newBuilder(query);
+
+    String diffQuery = createDiffQuery(stagingTableId, primaryKeys, blob.getBatchId(),
+                                       latestMergedSequence.get(targetTableId), sourceEventOrdering);
+
+    String mergeQuery = createMergeQuery(targetTableId, primaryKeys, blob.getTargetSchema(), diffQuery,
+                                         sourceEventOrdering);
+
+    QueryJobConfiguration.Builder jobConfigBuilder = QueryJobConfiguration.newBuilder(mergeQuery);
     if (encryptionConfig != null) {
       jobConfigBuilder.setDestinationEncryptionConfiguration(encryptionConfig);
     }
@@ -779,6 +785,157 @@ public class BigQueryEventConsumer implements EventConsumer {
     Job mergeJob = bigQuery.create(jobInfo);
     mergeJob.waitFor();
     LOG.debug("Merged batch {} into {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
+  }
+
+  static String createDiffQuery(TableId stagingTable, List<String> primaryKeys, long batchId,
+                                Long latestSequenceNumInTargetTable, SourceProperties.Ordering sourceEventOrdering) {
+    String joinCondition;
+    String whereClause;
+    if (sourceEventOrdering == SourceProperties.Ordering.UN_ORDERED) {
+      /*
+       * Query will be of the form:
+       *
+       * SELECT A.* FROM
+       *   (SELECT * FROM [staging table] WHERE _batch_id = 1234567890 AND _sequence_num > $LATEST_APPLIED) as A
+       *   LEFT OUTER JOIN
+       *   (SELECT * FROM [staging table] WHERE _batch_id = 1234567890 AND _sequence_num > $LATEST_APPLIED) as B
+       *   ON A._row_id = B._row_id AND A._sequence_num < B._sequence_num
+       *   WHERE B._row_id IS NULL
+       *
+       * Here we only construct the join condition and where clause as that is the only difference
+       * based on ordering of events.
+       */
+
+      joinCondition =  "A._row_id = B._row_id ";
+      whereClause = " B._row_id IS NULL ";
+    } else {
+      /*
+       * Query will be of the form:
+       *
+       * SELECT A.* FROM
+       *   (SELECT * FROM [staging table] WHERE _batch_id = 1234567890 AND _sequence_num > $LATEST_APPLIED) as A
+       *   LEFT OUTER JOIN
+       *   (SELECT * FROM [staging table] WHERE _batch_id = 1234567890 AND _sequence_num > $LATEST_APPLIED) as B
+       *   ON A.id = B._before_id AND A._sequence_num < B._sequence_num
+       *   WHERE B._before_id IS NULL
+       *
+       * Here we only construct the join condition and where clause as that is the only difference
+       * based on ordering of events.
+       */
+      joinCondition = primaryKeys.stream()
+        .map(name -> String.format("A.%s = B._before_%s", name, name))
+        .collect(Collectors.joining(" AND "));
+
+      whereClause = primaryKeys.stream()
+        .map(name -> String.format("B._before_%s IS NULL", name))
+        .collect(Collectors.joining(" AND "));
+    }
+
+    return "SELECT A.* FROM\n" +
+      "(SELECT * FROM " + stagingTable.getDataset() + "." + stagingTable.getTable() +
+      " WHERE _batch_id = " + batchId +
+      " AND _sequence_num > " + latestSequenceNumInTargetTable + ") as A\n" +
+      "LEFT OUTER JOIN\n" +
+      "(SELECT * FROM " + stagingTable.getDataset() + "." + stagingTable.getTable() +
+      " WHERE _batch_id = " + batchId +
+      " AND _sequence_num > " + latestSequenceNumInTargetTable + ") as B\n" +
+      "ON " + joinCondition + " AND A._sequence_num < B._sequence_num\n" +
+      "WHERE " + whereClause;
+  }
+
+  static String createMergeQuery(TableId targetTableId, List<String> primaryKeys, Schema targetSchema,
+                                 String diffQuery, SourceProperties.Ordering sourceEventOrdering) {
+    String mergeCondition;
+    String deleteOperation;
+
+    if (sourceEventOrdering == SourceProperties.Ordering.UN_ORDERED) {
+      /*
+       * Merge query will be of the following form:
+       *
+       * MERGE [target table] as T
+       *  USING ($DIFF_QUERY) as D
+       * ON T._row_id = D._row_id
+       * WHEN MATCHED AND D.op = “DELETE”
+       *    UPDATE _is_deleted = true
+       * WHEN MATCHED AND D.op IN (“UPDATE”)
+       *              AND D._sequence_num > T._sequence_num
+       *    UPDATE _sequence_num = D._sequence_num, id = D.id, name = D.name
+       * WHEN NOT MATCHED
+       *    INSERT (_sequence_num, _row_id, _is_deleted, id, name) VALUES
+       *           (D._sequence_num, D._row_id, false, D.id, D.name)
+       *
+       * Following are the differences compared to merge query for ORDERED events.
+       * 1. join condition used for the merge query includes _row_id.
+       * 2. when match happens for DELETE operation, update _is_deleted in the target table to true
+       * 3. when no match insert the new row
+       */
+      mergeCondition = " T._row_id = D._row_id ";
+      deleteOperation = "  UPDATE SET _is_deleted = true ";
+    } else {
+      /*
+       * Merge query will be of the following form:
+       *
+       * MERGE [target table] as T
+       * USING ($DIFF_QUERY) as D
+       * ON T.id = D._before_id
+       * WHEN MATCHED AND D._op = "DELETE" THEN
+       *   DELETE
+       * WHEN MATCHED AND D._op IN ("INSERT", "UPDATE") THEN
+       *   UPDATE id = D.id, name = D.name
+       * WHEN NOT MATCHED AND D._op IN ("INSERT", "UPDATE") THEN
+       *   INSERT (id, name) VALUES (id, name)
+       *
+       * Following are the differences compared to merge query for UN-ORDERED events.
+       * 1. join condition used for the merge query includes primary keys.
+       * 2. when match happens for DELETE operation, issue DELETE command
+       */
+      mergeCondition = primaryKeys.stream()
+        .map(name -> String.format("T.%s = D._before_%s", name, name))
+        .collect(Collectors.joining(" AND "));
+
+      deleteOperation = "  DELETE";
+    }
+
+    // target table schema always contains nullable fields such as _is_deleted, _row_id.
+    // however for ORDERED source, these fields are not in the staging table, so filter out these fields before
+    // we perform INSERT/UPDATE queries based on the values from the staging table.
+    final Predicate<Schema.Field> predicate = field -> {
+      // filter out _is_deleted field for operations INSERT and UPDATE as it will be set when
+      // the operation is DELETE.
+      if (field.getName().equals(Constants.IS_DELETED)) {
+        return false;
+      }
+      if (sourceEventOrdering != SourceProperties.Ordering.ORDERED) {
+        return true;
+      }
+      // filter out the _row_id field for ORDERED source, as this field will not be present in the staging table.
+      return !field.getName().equals(Constants.ROW_ID);
+    };
+
+    return "MERGE " +
+      targetTableId.getDataset() + "." + targetTableId.getTable() + " as T\n" +
+      "USING (" + diffQuery + ") as D\n" +
+      "ON " + mergeCondition + "\n" +
+      "WHEN MATCHED AND D._op = \"DELETE\" THEN\n" +
+      deleteOperation + "\n" +
+      "WHEN MATCHED AND D._op = \"UPDATE\" AND D._sequence_num > T._sequence_num THEN\n" +
+      "  UPDATE SET " +
+      targetSchema.getFields().stream()
+        .filter(predicate)
+        .map(Schema.Field::getName)
+        .map(name -> String.format("%s = D.%s", name, name))
+        .collect(Collectors.joining(", ")) + "\n" +
+      "WHEN NOT MATCHED AND D._op IN (\"INSERT\", \"UPDATE\") THEN\n" +
+      "  INSERT (" +
+      targetSchema.getFields().stream()
+        .filter(predicate)
+        .map(Schema.Field::getName)
+        .collect(Collectors.joining(", ")) +
+      ") VALUES (" +
+      targetSchema.getFields().stream()
+        .filter(predicate)
+        .map(Schema.Field::getName)
+        .collect(Collectors.joining(", ")) + ")";
   }
 
   private void runWithRetries(ContextualRunnable runnable, TableBlob blob, String onFailedAttemptMessage,
