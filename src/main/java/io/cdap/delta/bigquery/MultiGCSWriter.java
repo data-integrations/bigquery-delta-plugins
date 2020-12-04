@@ -1,5 +1,5 @@
 /*
- * Copyright © 2019 Cask Data, Inc.
+ * Copyright © 2019-2020 Cask Data, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not
  * use this file except in compliance with the License. You may obtain a copy of
@@ -27,6 +27,7 @@ import io.cdap.delta.api.DMLOperation;
 import io.cdap.delta.api.DeltaTargetContext;
 import io.cdap.delta.api.ReplicationError;
 import io.cdap.delta.api.Sequenced;
+import io.cdap.delta.api.SourceProperties;
 import org.apache.avro.file.DataFileWriter;
 import org.apache.avro.io.DatumWriter;
 import org.slf4j.Logger;
@@ -57,6 +58,7 @@ public class MultiGCSWriter {
   private final Map<Schema, org.apache.avro.Schema> schemaMap;
   private final DeltaTargetContext context;
   private final ExecutorService executorService;
+  private final SourceProperties.Ordering sourceEventOrdering;
 
   public MultiGCSWriter(Storage storage, String bucket, String baseObjectName,
                         DeltaTargetContext context, ExecutorService executorService) {
@@ -67,6 +69,8 @@ public class MultiGCSWriter {
     this.schemaMap = new HashMap<>();
     this.context = context;
     this.executorService = executorService;
+    this.sourceEventOrdering = context.getSourceProperties() == null ? SourceProperties.Ordering.ORDERED :
+      context.getSourceProperties().getOrdering();
   }
 
   public synchronized void write(Sequenced<DMLEvent> sequencedEvent) {
@@ -204,7 +208,7 @@ public class MultiGCSWriter {
       StructuredRecord row = event.getRow();
       if (avroWriter == null) {
         targetSchema = getTargetSchema(row.getSchema());
-        stagingSchema = getStagingSchema(targetSchema);
+        stagingSchema = getStagingSchema(row.getSchema());
         DatumWriter<StructuredRecord> datumWriter = new RecordDatumWriter();
         org.apache.avro.Schema avroSchema = schemaMap.computeIfAbsent(stagingSchema, s -> {
           org.apache.avro.Schema.Parser parser = new org.apache.avro.Schema.Parser();
@@ -230,15 +234,20 @@ public class MultiGCSWriter {
     }
 
     private Schema getTargetSchema(Schema schema) {
-      List<Schema.Field> fields = new ArrayList<>(schema.getFields().size() + 1);
+      List<Schema.Field> fields = new ArrayList<>(schema.getFields().size() + 3);
       fields.addAll(schema.getFields());
-      fields.add(Schema.Field.of("_sequence_num", Schema.of(Schema.Type.LONG)));
+      fields.add(Schema.Field.of(Constants.SEQUENCE_NUM, Schema.of(Schema.Type.LONG)));
+      fields.add(Schema.Field.of(Constants.IS_DELETED, Schema.nullableOf(Schema.of(Schema.Type.BOOLEAN))));
+      fields.add(Schema.Field.of(Constants.ROW_ID, Schema.nullableOf(Schema.of(Schema.Type.STRING))));
       return Schema.recordOf(schema.getRecordName() + ".target", fields);
     }
 
     /*
-        The staging table contains information about the batch id, sequence number, operation type,
-        the previous value, and the new value. Previous value is null except for update events.
+        Staging table schema depends on the type of source used in the pipeline.
+
+        If source used is generating ORDERED events, then staging table contains information about
+        the batch id, sequence number, operation type, the previous value, and the new value.
+        Previous value is null except for update events.
 
         For example, suppose the source table has two columns -- id (long) and name (string).
         The staging table would have the following columns:
@@ -250,21 +259,44 @@ public class MultiGCSWriter {
           name (string)
           _before_id (long)
           _before_name (string)
+
+        If the source used in the pipeline is generating UN-ORDERED events, then for the same example above,
+        staging table would contain following columns:
+
+          _op (string)
+          _batch_id (long)
+          _sequence_num (long)
+          _row_id (string)
+          id (long)
+          name (string)
      */
     private Schema getStagingSchema(Schema schema) {
-      List<Schema.Field> fields = new ArrayList<>(2 * schema.getFields().size() + 3);
-      fields.add(Schema.Field.of("_op", Schema.of(Schema.Type.STRING)));
-      fields.add(Schema.Field.of("_batch_id", Schema.of(Schema.Type.LONG)));
+      int fieldLength = sourceEventOrdering == SourceProperties.Ordering.ORDERED ?
+        2 * schema.getFields().size() + 3 // (source schema + _before_ columns) + _op, _batch_id, _sequence_num
+        : schema.getFields().size() + 4; // source schema fields + _op, _batch_id, _sequence_num, _row_id
+
+      List<Schema.Field> fields = new ArrayList<>(fieldLength);
+
+      fields.add(Schema.Field.of(Constants.OPERATION, Schema.of(Schema.Type.STRING)));
+      fields.add(Schema.Field.of(Constants.BATCH_ID, Schema.of(Schema.Type.LONG)));
+      fields.add(Schema.Field.of(Constants.SEQUENCE_NUM, Schema.of(Schema.Type.LONG)));
+
+      // add all fields from source schema
       fields.addAll(schema.getFields());
-      for (Schema.Field field : schema.getFields()) {
-        if ("_sequence_num".equals(field.getName())) {
-          continue;
+
+      if (sourceEventOrdering == SourceProperties.Ordering.UN_ORDERED) {
+        // add _row_id field to handle un-ordered events
+        fields.add(Schema.Field.of(Constants.ROW_ID, Schema.of(Schema.Type.STRING)));
+      } else {
+        // add _before_ fields for ORDERED events only
+        for (Schema.Field field : schema.getFields()) {
+          String beforeName = "_before_" + field.getName();
+          Schema beforeSchema = field.getSchema();
+          beforeSchema = beforeSchema.isNullable() ? beforeSchema : Schema.nullableOf(beforeSchema);
+          fields.add(Schema.Field.of(beforeName, beforeSchema));
         }
-        String beforeName = "_before_" + field.getName();
-        Schema beforeSchema = field.getSchema();
-        beforeSchema = beforeSchema.isNullable() ? beforeSchema : Schema.nullableOf(beforeSchema);
-        fields.add(Schema.Field.of(beforeName, beforeSchema));
       }
+
       return Schema.recordOf(schema.getRecordName() + ".staging", fields);
     }
 
@@ -272,11 +304,17 @@ public class MultiGCSWriter {
       DMLEvent event = sequencedEvent.getEvent();
       StructuredRecord row = event.getRow();
       StructuredRecord.Builder builder = StructuredRecord.builder(stagingSchema);
-      builder.set("_op", event.getOperation().getType().name());
-      builder.set("_batch_id", batchId);
-      builder.set("_sequence_num", sequencedEvent.getSequenceNumber());
+      builder.set(Constants.OPERATION, event.getOperation().getType().name());
+      builder.set(Constants.BATCH_ID, batchId);
+      builder.set(Constants.SEQUENCE_NUM, sequencedEvent.getSequenceNumber());
+
       for (Schema.Field field : row.getSchema().getFields()) {
         builder.set(field.getName(), row.get(field.getName()));
+      }
+
+      if (sourceEventOrdering == SourceProperties.Ordering.UN_ORDERED) {
+        builder.set(Constants.ROW_ID, event.getRowId());
+        return builder.build();
       }
 
       StructuredRecord beforeRow = null;
