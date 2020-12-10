@@ -27,9 +27,12 @@ import io.cdap.delta.api.DeltaTargetContext;
 import io.cdap.delta.api.Offset;
 import io.cdap.delta.api.ReplicationError;
 import io.cdap.delta.api.SourceProperties;
+import io.cdap.delta.api.SourceTable;
 
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 import javax.annotation.Nullable;
 
 /**
@@ -129,6 +132,11 @@ public class MockContext implements DeltaTargetContext {
   @Override
   public DeltaPipelineId getPipelineId() {
     return new DeltaPipelineId("default", "app", 0L);
+  }
+
+  @Override
+  public Set<SourceTable> getAllTables() {
+    return Collections.emptySet();
   }
 
   @Override
