@@ -269,7 +269,7 @@ public class BigQueryEventConsumer implements EventConsumer {
 
     DDLEvent event = sequencedEvent.getEvent();
     DDLOperation ddlOperation = event.getOperation();
-    String normalizedDatabaseName = normalize(event.getDatabase());
+    String normalizedDatabaseName = normalize(event.getOperation().getDatabaseName());
     String normalizedTableName = normalize(ddlOperation.getTableName());
     String normalizedStagingTableName = normalizedTableName == null ? null :
       normalize(stagingTablePrefix + normalizedTableName);
@@ -413,7 +413,8 @@ public class BigQueryEventConsumer implements EventConsumer {
         // TODO: flush changes, execute a copy job, delete previous table, drop old staging table, remove old entry
         //  in primaryKeyStore, put new entry in primaryKeyStore
         LOG.warn("Rename DDL events are not supported. Ignoring rename event in database {} from table {} to table {}.",
-                 event.getDatabase(), event.getOperation().getPrevTableName(), event.getOperation().getTableName());
+          event.getOperation().getDatabaseName(), event.getOperation().getPrevTableName(),
+          event.getOperation().getTableName());
         break;
       case TRUNCATE_TABLE:
         flush();
@@ -505,11 +506,11 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
 
     DMLEvent event = sequencedEvent.getEvent();
-    String normalizedDatabaseName = normalize(event.getDatabase());
+    String normalizedDatabaseName = normalize(event.getOperation().getDatabaseName());
     String normalizedTableName = normalize(event.getOperation().getTableName());
     DMLEvent normalizedDMLEvent = DMLEvent.builder(event)
-      .setDatabase(normalizedDatabaseName)
-      .setTable(normalizedTableName)
+      .setDatabaseName(normalizedDatabaseName)
+      .setTableName(normalizedTableName)
       .build();
     long sequenceNumber = sequencedEvent.getSequenceNumber();
     gcsWriter.write(new Sequenced<>(normalizedDMLEvent, sequenceNumber));
