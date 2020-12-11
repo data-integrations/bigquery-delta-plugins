@@ -76,8 +76,8 @@ public class MultiGCSWriter {
   public synchronized void write(Sequenced<DMLEvent> sequencedEvent) {
     DMLEvent event = sequencedEvent.getEvent();
     DMLOperation dmlOperation = event.getOperation();
-    Key key = new Key(event.getDatabase(), dmlOperation.getTableName());
-    TableObject tableObject = objects.computeIfAbsent(key, t -> new TableObject(event.getDatabase(),
+    Key key = new Key(event.getOperation().getDatabaseName(), dmlOperation.getTableName());
+    TableObject tableObject = objects.computeIfAbsent(key, t -> new TableObject(event.getOperation().getDatabaseName(),
                                                                                 dmlOperation.getTableName()));
     try {
       tableObject.writeEvent(sequencedEvent);
@@ -321,12 +321,12 @@ public class MultiGCSWriter {
       switch (event.getOperation().getType()) {
         case UPDATE:
           beforeRow = event.getPreviousRow();
-          if (beforeRow == null) {
+          if (beforeRow == null && sourceEventOrdering == SourceProperties.Ordering.ORDERED) {
             // should never happen unless the source is implemented incorrectly
             throw new IllegalStateException(String.format(
               "Encountered an update event for %s.%s that did not include the previous column values. "
                 + "Previous column values are required for replication.",
-              event.getDatabase(), event.getOperation().getTableName()));
+              event.getOperation().getDatabaseName(), event.getOperation().getTableName()));
           }
           break;
         case DELETE:
