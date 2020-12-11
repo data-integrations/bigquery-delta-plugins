@@ -27,7 +27,6 @@ import io.cdap.delta.api.DMLOperation;
 import io.cdap.delta.api.DeltaTargetContext;
 import io.cdap.delta.api.ReplicationError;
 import io.cdap.delta.api.Sequenced;
-import io.cdap.delta.api.SourceProperties;
 import org.apache.avro.file.DataFileWriter;
 import org.apache.avro.io.DatumWriter;
 import org.slf4j.Logger;
@@ -58,7 +57,7 @@ public class MultiGCSWriter {
   private final Map<Schema, org.apache.avro.Schema> schemaMap;
   private final DeltaTargetContext context;
   private final ExecutorService executorService;
-  private final SourceProperties.Ordering sourceEventOrdering;
+  private final boolean rowIdSupported;
 
   public MultiGCSWriter(Storage storage, String bucket, String baseObjectName,
                         DeltaTargetContext context, ExecutorService executorService) {
@@ -69,8 +68,8 @@ public class MultiGCSWriter {
     this.schemaMap = new HashMap<>();
     this.context = context;
     this.executorService = executorService;
-    this.sourceEventOrdering = context.getSourceProperties() == null ? SourceProperties.Ordering.ORDERED :
-      context.getSourceProperties().getOrdering();
+    this.rowIdSupported = context.getSourceProperties() == null ? false :
+      context.getSourceProperties().isRowIdSupported();
   }
 
   public synchronized void write(Sequenced<DMLEvent> sequencedEvent) {
@@ -271,9 +270,9 @@ public class MultiGCSWriter {
           name (string)
      */
     private Schema getStagingSchema(Schema schema) {
-      int fieldLength = sourceEventOrdering == SourceProperties.Ordering.ORDERED ?
-        2 * schema.getFields().size() + 3 // (source schema + _before_ columns) + _op, _batch_id, _sequence_num
-        : schema.getFields().size() + 4; // source schema fields + _op, _batch_id, _sequence_num, _row_id
+      int fieldLength =
+        rowIdSupported ? schema.getFields().size() + 4 // source schema fields + _op, _batch_id, _sequence_num, _row_id
+          : 2 * schema.getFields().size() + 3; // (source schema + _before_ columns) + _op, _batch_id, _sequence_num
 
       List<Schema.Field> fields = new ArrayList<>(fieldLength);
 
@@ -284,7 +283,7 @@ public class MultiGCSWriter {
       // add all fields from source schema
       fields.addAll(schema.getFields());
 
-      if (sourceEventOrdering == SourceProperties.Ordering.UN_ORDERED) {
+      if (rowIdSupported) {
         // add _row_id field to handle un-ordered events
         fields.add(Schema.Field.of(Constants.ROW_ID, Schema.of(Schema.Type.STRING)));
       } else {
@@ -312,7 +311,7 @@ public class MultiGCSWriter {
         builder.set(field.getName(), row.get(field.getName()));
       }
 
-      if (sourceEventOrdering == SourceProperties.Ordering.UN_ORDERED) {
+      if (rowIdSupported) {
         builder.set(Constants.ROW_ID, event.getRowId());
         return builder.build();
       }
@@ -321,7 +320,7 @@ public class MultiGCSWriter {
       switch (event.getOperation().getType()) {
         case UPDATE:
           beforeRow = event.getPreviousRow();
-          if (beforeRow == null && sourceEventOrdering == SourceProperties.Ordering.ORDERED) {
+          if (beforeRow == null && !rowIdSupported) {
             // should never happen unless the source is implemented incorrectly
             throw new IllegalStateException(String.format(
               "Encountered an update event for %s.%s that did not include the previous column values. "
