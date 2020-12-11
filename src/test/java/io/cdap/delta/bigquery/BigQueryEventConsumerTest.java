@@ -162,8 +162,8 @@ public class BigQueryEventConsumerTest {
     bigQuery.create(DatasetInfo.newBuilder(dataset).build());
     DDLEvent createTable = DDLEvent.builder()
       .setOperation(DDLOperation.Type.CREATE_TABLE)
-      .setDatabase(dataset)
-      .setTable(tableName)
+      .setDatabaseName(dataset)
+      .setTableName(tableName)
       .setSchema(schema)
       .setPrimaryKey(primaryKeys)
       .setOffset(new Offset())
@@ -198,8 +198,8 @@ public class BigQueryEventConsumerTest {
 
       DDLEvent dropTable = DDLEvent.builder()
         .setOperation(DDLOperation.Type.DROP_TABLE)
-        .setDatabase(dataset)
-        .setTable(tableName)
+        .setDatabaseName(dataset)
+        .setTableName(tableName)
         .setOffset(new Offset())
         .build();
 
@@ -242,16 +242,16 @@ public class BigQueryEventConsumerTest {
       // dropping a table that doesn't exist should be fine
       DDLEvent dropTable = DDLEvent.builder()
         .setOperation(DDLOperation.Type.DROP_TABLE)
-        .setDatabase(dataset)
-        .setTable(UUID.randomUUID().toString())
+        .setDatabaseName(dataset)
+        .setTableName(UUID.randomUUID().toString())
         .setOffset(new Offset())
         .build();
       eventConsumer.applyDDL(new Sequenced<>(dropTable, 0));
 
       dropTable = DDLEvent.builder()
         .setOperation(DDLOperation.Type.DROP_TABLE)
-        .setDatabase(dataset)
-        .setTable(tableName)
+        .setDatabaseName(dataset)
+        .setTableName(tableName)
         .setOffset(new Offset())
         .build();
       try {
@@ -267,7 +267,7 @@ public class BigQueryEventConsumerTest {
 
       DDLEvent dropDatabase = DDLEvent.builder()
         .setOperation(DDLOperation.Type.DROP_DATABASE)
-        .setDatabase(UUID.randomUUID().toString())
+        .setDatabaseName(UUID.randomUUID().toString())
         .setOffset(new Offset())
         .build();
       // should be fine if the dataset doesn't already exist
@@ -275,7 +275,7 @@ public class BigQueryEventConsumerTest {
 
       dropDatabase = DDLEvent.builder()
         .setOperation(DDLOperation.Type.DROP_DATABASE)
-        .setDatabase(dataset)
+        .setDatabaseName(dataset)
         .setOffset(new Offset())
         .build();
       try {
@@ -321,8 +321,8 @@ public class BigQueryEventConsumerTest {
                         Schema.Field.of("score", Schema.nullableOf(Schema.of(Schema.Type.DOUBLE))));
       DDLEvent alterEvent = DDLEvent.builder()
         .setOperation(DDLOperation.Type.ALTER_TABLE)
-        .setDatabase(dataset)
-        .setTable(tableName)
+        .setDatabaseName(dataset)
+        .setTableName(tableName)
         .setSchema(updatedSchema)
         .setPrimaryKey(Collections.singletonList("id"))
         .setOffset(new Offset())
@@ -409,8 +409,8 @@ public class BigQueryEventConsumerTest {
         .setOperationType(DMLOperation.Type.INSERT)
         .setIngestTimestamp(0L)
         .setSnapshot(false)
-        .setDatabase(dataset)
-        .setTable(tableName)
+        .setDatabaseName(dataset)
+        .setTableName(tableName)
         .setRow(insert1)
         .setOffset(new Offset())
         .build();
@@ -429,8 +429,8 @@ public class BigQueryEventConsumerTest {
         .setOperationType(DMLOperation.Type.INSERT)
         .setIngestTimestamp(1L)
         .setSnapshot(false)
-        .setDatabase(dataset)
-        .setTable(tableName)
+        .setDatabaseName(dataset)
+        .setTableName(tableName)
         .setRow(insert2)
         .setOffset(new Offset())
         .build();
@@ -473,8 +473,8 @@ public class BigQueryEventConsumerTest {
         .setOperationType(DMLOperation.Type.UPDATE)
         .setIngestTimestamp(2L)
         .setSnapshot(false)
-        .setDatabase(dataset)
-        .setTable(tableName)
+        .setDatabaseName(dataset)
+        .setTableName(tableName)
         .setPreviousRow(insert1)
         .setRow(update)
         .setOffset(new Offset())
@@ -485,8 +485,8 @@ public class BigQueryEventConsumerTest {
         .setOperationType(DMLOperation.Type.DELETE)
         .setIngestTimestamp(3L)
         .setSnapshot(false)
-        .setDatabase(dataset)
-        .setTable(tableName)
+        .setDatabaseName(dataset)
+        .setTableName(tableName)
         .setRow(insert2)
         .setOffset(new Offset())
         .build();
@@ -534,8 +534,8 @@ public class BigQueryEventConsumerTest {
         .setOperationType(DMLOperation.Type.INSERT)
         .setIngestTimestamp(0L)
         .setSnapshot(false)
-        .setDatabase(dataset)
-        .setTable(tableName)
+        .setDatabaseName(dataset)
+        .setTableName(tableName)
         .setRow(insert1)
         .setOffset(new Offset())
         .build();
@@ -554,8 +554,8 @@ public class BigQueryEventConsumerTest {
         .setOperationType(DMLOperation.Type.INSERT)
         .setIngestTimestamp(1L)
         .setSnapshot(false)
-        .setDatabase(dataset)
-        .setTable(tableName)
+        .setDatabaseName(dataset)
+        .setTableName(tableName)
         .setRow(insert2)
         .setOffset(new Offset())
         .build();
@@ -590,8 +590,8 @@ public class BigQueryEventConsumerTest {
       DDLEvent truncateEvent = DDLEvent.builder()
         .setOperation(DDLOperation.Type.TRUNCATE_TABLE)
         .setSnapshot(false)
-        .setDatabase(dataset)
-        .setTable(tableName)
+        .setDatabaseName(dataset)
+        .setTableName(tableName)
         .setOffset(new Offset())
         .build();
       eventConsumer.applyDDL(new Sequenced<>(truncateEvent, sequenceNum++));
@@ -610,7 +610,7 @@ public class BigQueryEventConsumerTest {
     // test creation of dataset
     DDLEvent createDatabase = DDLEvent.builder()
       .setOperation(DDLOperation.Type.CREATE_DATABASE)
-      .setDatabase(dataset)
+      .setDatabaseName(dataset)
       .build();
 
     eventConsumer.applyDDL(new Sequenced<>(createDatabase, sequenceNum++));
@@ -621,8 +621,8 @@ public class BigQueryEventConsumerTest {
     for (String tableName : tableNames) {
       DDLEvent createEvent = DDLEvent.builder()
         .setOperation(DDLOperation.Type.CREATE_TABLE)
-        .setDatabase(dataset)
-        .setTable(tableName)
+        .setDatabaseName(dataset)
+        .setTableName(tableName)
         .setSchema(USER_SCHEMA)
         .setPrimaryKey(Collections.singletonList("id"))
         .build();
