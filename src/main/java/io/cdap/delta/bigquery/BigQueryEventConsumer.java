@@ -51,7 +51,6 @@ import io.cdap.delta.api.EventConsumer;
 import io.cdap.delta.api.Offset;
 import io.cdap.delta.api.ReplicationError;
 import io.cdap.delta.api.Sequenced;
-import io.cdap.delta.api.SourceProperties;
 import net.jodah.failsafe.Failsafe;
 import net.jodah.failsafe.FailsafeException;
 import net.jodah.failsafe.RetryPolicy;
@@ -180,7 +179,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final boolean requireManualDrops;
   private final long baseRetryDelay;
   private final int maxClusteringColumns;
-  private final SourceProperties.Ordering sourceEventOrdering;
+  private final boolean sourceRowIdSupported;
   private ScheduledExecutorService scheduledExecutorService;
   private ScheduledFuture<?> scheduledFlush;
   private ExecutorService executorService;
@@ -228,8 +227,8 @@ public class BigQueryEventConsumer implements EventConsumer {
     // current max clustering columns is set as 4 in big query side, use that as default max value
     // https://cloud.google.com/bigquery/docs/creating-clustered-tables#limitations
     this.maxClusteringColumns = maxClusteringColumnsStr == null ? 4 : Integer.parseInt(maxClusteringColumnsStr);
-    this.sourceEventOrdering = context.getSourceProperties() == null ? SourceProperties.Ordering.ORDERED :
-      context.getSourceProperties().getOrdering();
+    this.sourceRowIdSupported =
+      context.getSourceProperties() == null ? false : context.getSourceProperties().isRowIdSupported();
   }
 
   @Override
@@ -665,7 +664,7 @@ public class BigQueryEventConsumer implements EventConsumer {
      *
      * Two independent cases to be considered while performing merge operation:
      *
-     * Case 1: Source generates ordered events.
+     * Case 1: Source generates events without row id.
      *
      * If the source table has two columns -- id and name -- the staging table will look something like:
      *
@@ -712,7 +711,7 @@ public class BigQueryEventConsumer implements EventConsumer {
      * doing the wrong thing because what goes into a batch is not deterministic due to the time bound on batches.
      *
      *
-     * Case 2: Source generates un-ordered events.
+     * Case 2: Source generates events with row id.
      *
      * If the source table has two columns -- id and name -- the staging table will look something like:
      *
@@ -752,7 +751,7 @@ public class BigQueryEventConsumer implements EventConsumer {
      *      ON A._row_id = B._row_id AND A._sequence_num < B._sequence_num
      * WHERE B._row_id IS NULL
      *
-     * Similar to the case of ORDERED event, the above $DIFF_QUERY flattens events within same batch
+     * Similar to the case of events without row id, the above $DIFF_QUERY flattens events within same batch
      * that have the same _row_id and finds out the latest event.
      *
      * The result of $DIFF_QUERY for the example above would be:
@@ -763,10 +762,10 @@ public class BigQueryEventConsumer implements EventConsumer {
      */
 
     String diffQuery = createDiffQuery(stagingTableId, primaryKeys, blob.getBatchId(),
-                                       latestMergedSequence.get(targetTableId), sourceEventOrdering);
+                                       latestMergedSequence.get(targetTableId), sourceRowIdSupported);
 
-    String mergeQuery = createMergeQuery(targetTableId, primaryKeys, blob.getTargetSchema(), diffQuery,
-                                         sourceEventOrdering);
+    String mergeQuery =
+      createMergeQuery(targetTableId, primaryKeys, blob.getTargetSchema(), diffQuery, sourceRowIdSupported);
 
     QueryJobConfiguration.Builder jobConfigBuilder = QueryJobConfiguration.newBuilder(mergeQuery);
     if (encryptionConfig != null) {
@@ -789,10 +788,10 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   static String createDiffQuery(TableId stagingTable, List<String> primaryKeys, long batchId,
-                                Long latestSequenceNumInTargetTable, SourceProperties.Ordering sourceEventOrdering) {
+                                Long latestSequenceNumInTargetTable, boolean sourceRowIdSupported) {
     String joinCondition;
     String whereClause;
-    if (sourceEventOrdering == SourceProperties.Ordering.UN_ORDERED) {
+    if (sourceRowIdSupported) {
       /*
        * Query will be of the form:
        *
@@ -804,7 +803,7 @@ public class BigQueryEventConsumer implements EventConsumer {
        *   WHERE B._row_id IS NULL
        *
        * Here we only construct the join condition and where clause as that is the only difference
-       * based on ordering of events.
+       * based on where source events support row id.
        */
 
       joinCondition =  "A._row_id = B._row_id ";
@@ -845,11 +844,11 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   static String createMergeQuery(TableId targetTableId, List<String> primaryKeys, Schema targetSchema,
-                                 String diffQuery, SourceProperties.Ordering sourceEventOrdering) {
+                                 String diffQuery, boolean sourceRowIdSupported) {
     String mergeCondition;
     String deleteOperation;
 
-    if (sourceEventOrdering == SourceProperties.Ordering.UN_ORDERED) {
+    if (sourceRowIdSupported) {
       /*
        * Merge query will be of the following form:
        *
@@ -865,7 +864,7 @@ public class BigQueryEventConsumer implements EventConsumer {
        *    INSERT (_sequence_num, _row_id, _is_deleted, id, name) VALUES
        *           (D._sequence_num, D._row_id, false, D.id, D.name)
        *
-       * Following are the differences compared to merge query for ORDERED events.
+       * Following are the differences compared to merge query for events with row id.
        * 1. join condition used for the merge query includes _row_id.
        * 2. when match happens for DELETE operation, update _is_deleted in the target table to true
        * 3. when no match insert the new row
@@ -886,7 +885,7 @@ public class BigQueryEventConsumer implements EventConsumer {
        * WHEN NOT MATCHED AND D._op IN ("INSERT", "UPDATE") THEN
        *   INSERT (id, name) VALUES (id, name)
        *
-       * Following are the differences compared to merge query for UN-ORDERED events.
+       * Following are the differences compared to merge query for events with row id.
        * 1. join condition used for the merge query includes primary keys.
        * 2. when match happens for DELETE operation, issue DELETE command
        */
@@ -906,7 +905,7 @@ public class BigQueryEventConsumer implements EventConsumer {
       if (field.getName().equals(Constants.IS_DELETED)) {
         return false;
       }
-      if (sourceEventOrdering != SourceProperties.Ordering.ORDERED) {
+      if (sourceRowIdSupported) {
         return true;
       }
       // filter out the _row_id field for ORDERED source, as this field will not be present in the staging table.
@@ -919,7 +918,12 @@ public class BigQueryEventConsumer implements EventConsumer {
       "ON " + mergeCondition + "\n" +
       "WHEN MATCHED AND D._op = \"DELETE\" THEN\n" +
       deleteOperation + "\n" +
-      "WHEN MATCHED AND D._op = \"UPDATE\" AND D._sequence_num > T._sequence_num THEN\n" +
+      // In a case when a replicator is paused for too long and crashed when resumed
+      // user will create a new replicator against the same target
+      // in this case the target already has some data
+      // so the new repliator's snapshot will generate insert events that match some existing data in the
+      // targe. That's why in the match case, we still need the insert opertion.
+      "WHEN MATCHED AND D._op IN (\"INSERT\", \"UPDATE\") AND D._sequence_num > T._sequence_num THEN\n" +
       "  UPDATE SET " +
       targetSchema.getFields().stream()
         .filter(predicate)
