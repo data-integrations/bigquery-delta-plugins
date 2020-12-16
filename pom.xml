@@ -56,7 +56,7 @@
   <properties>
     <avro.version>1.8.2</avro.version>
     <bigquery.version>1.78.0</bigquery.version>
-    <cdap.version>6.0.0</cdap.version>
+    <cdap.version>6.3.0-SNAPSHOT</cdap.version>
     <delta.version>0.2.0-SNAPSHOT</delta.version>
     <failsafe.version>2.3.3</failsafe.version>
     <gcs.version>1.78.0</gcs.version>
