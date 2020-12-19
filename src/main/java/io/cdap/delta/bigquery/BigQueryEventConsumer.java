@@ -342,7 +342,6 @@ public class BigQueryEventConsumer implements EventConsumer {
             Clustering.newBuilder()
               .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
               .build();
-          LOG.error("##SEAN create target table ..." + event.getSchema().toString());
           TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
             .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema())))
             .setClustering(clustering)
@@ -618,7 +617,6 @@ public class BigQueryEventConsumer implements EventConsumer {
       Clustering clustering = maxClusteringColumns <= 0 ? null : Clustering.newBuilder()
         .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
         .build();
-      LOG.error("##SEAN create taging table ..." + blob.getStagingSchema().toString());
       TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
         .setLocation(bucket.getLocation())
         .setSchema(Schemas.convert(blob.getStagingSchema()))

@@ -38,11 +38,12 @@ import java.util.Objects;
  */
 public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> {
   private final String stagingTablePrefix;
-  // tables already assessed so far, key is table
-  private final Map<String, String> tables = new HashMap<>();
+  // tables already assessed so far, key is table name and value is schema name
+  private final Map<String, String> tableToSchema;
 
   BigQueryAssessor(String stagingTablePrefix) {
     this.stagingTablePrefix = stagingTablePrefix;
+    this.tableToSchema  = new HashMap<>();
   }
 
   @Override
@@ -67,17 +68,18 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
     String tableName = tableDetail.getTable();
 
 
-    if (tables.containsKey(tableName)) {
+    if (tableToSchema.containsKey(tableName)) {
       // TODO support same table name in different schema
-      if (!Objects.equals(tables.get(tableName), tableDetail.getSchemaName())) {
-        problems.add(new Problem("Duplicate Table Name", String.format("Duplicated table name %s detected. BigQuery " +
-          "doesn't support duplicate table name even though they are in different schema", tableName),
-          "Please only select one of the tables with same table name to replicate",
-          "Not be able to replicate multiple tables with same name " + "to BigQuery"));
+      if (!Objects.equals(tableToSchema.get(tableName), tableDetail.getSchemaName())) {
+        problems.add(new Problem("Duplicate Table Name", String.format("Table with name '%s' found in two different " +
+            "schemas, '%s' and '%s'. BigQuery target requires table names to be unique across the schemas. Please " +
+            "select table from one of the schemas only for replication.", tableName, tableToSchema.get(tableName),
+          tableDetail.getSchemaName()), "Please only select one of the tables with same table name to replicate",
+          "Not be able to replicate multiple tables with same name to BigQuery"));
       }
       // else if schema name is same, that means it's assessing the same table.
     } else {
-      tables.put(tableName, tableDetail.getSchemaName());
+      tableToSchema.put(tableName, tableDetail.getSchemaName());
     }
     String stagingTableName = stagingTablePrefix + tableName;
     if (tableDetail.getPrimaryKey().isEmpty()) {
