@@ -952,7 +952,8 @@ public class BigQueryEventConsumer implements EventConsumer {
         LOG.error(onFailedAttemptMessage, t);
         // its ok to set table state every retry, because this is a no-op if there is no change to the state.
         try {
-          context.setTableError(blob.getDataset(), blob.getTable(), new ReplicationError(t));
+          context.setTableError(blob.getDataset(), blob.getSourceDbSchemaName(), blob.getTable(),
+                                new ReplicationError(t));
         } catch (IOException e) {
           // setting table state is not a fatal error, log a warning and continue on
           LOG.warn("Unable to set error state for table {}.{}. Replication state for the table may be incorrect.",
