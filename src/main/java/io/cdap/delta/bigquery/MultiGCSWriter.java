@@ -44,6 +44,7 @@ import java.util.Objects;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
+import javax.annotation.Nullable;
 
 /**
  * Writes to multiple GCS files.
@@ -76,7 +77,8 @@ public class MultiGCSWriter {
     DMLEvent event = sequencedEvent.getEvent();
     DMLOperation dmlOperation = event.getOperation();
     Key key = new Key(event.getOperation().getDatabaseName(), dmlOperation.getTableName());
-    TableObject tableObject = objects.computeIfAbsent(key, t -> new TableObject(event.getOperation().getDatabaseName(),
+    TableObject tableObject = objects.computeIfAbsent(key, t -> new TableObject(dmlOperation.getDatabaseName(),
+                                                                                dmlOperation.getSchemaName(),
                                                                                 dmlOperation.getTableName()));
     try {
       tableObject.writeEvent(sequencedEvent);
@@ -99,7 +101,7 @@ public class MultiGCSWriter {
         } catch (IOException e) {
           String errMsg = String.format("Error writing batch of %d changes for %s.%s to GCS",
                                         tableObject.numEvents, tableObject.dataset, tableObject.table);
-          context.setTableError(tableObject.dataset, tableObject.table,
+          context.setTableError(tableObject.dataset, tableObject.sourceDbSchemaName, tableObject.table,
                                 new ReplicationError(errMsg, e.getStackTrace()));
           throw new IOException(errMsg, e);
         }
@@ -107,8 +109,9 @@ public class MultiGCSWriter {
                   tableObject.dataset, tableObject.table);
 
         Blob blob = storage.get(tableObject.blobId);
-        return new TableBlob(tableObject.dataset, tableObject.table, tableObject.targetSchema,
-                             tableObject.stagingSchema, tableObject.batchId, tableObject.numEvents, blob);
+        return new TableBlob(tableObject.dataset, tableObject.sourceDbSchemaName, tableObject.table,
+                             tableObject.targetSchema, tableObject.stagingSchema, tableObject.batchId,
+                             tableObject.numEvents, blob);
       }));
     }
 
@@ -185,14 +188,16 @@ public class MultiGCSWriter {
     private final long batchId;
     private final String dataset;
     private final String table;
+    private final String sourceDbSchemaName;
     private final BlobId blobId;
     private int numEvents;
     private Schema stagingSchema;
     private Schema targetSchema;
     private DataFileWriter<StructuredRecord> avroWriter;
 
-    private TableObject(String dataset, String table) {
+    private TableObject(String dataset, @Nullable String sourceDbSchemaName, String table) {
       this.dataset = dataset;
+      this.sourceDbSchemaName = sourceDbSchemaName;
       this.table = table;
       this.numEvents = 0;
       batchId = System.currentTimeMillis();
