@@ -18,7 +18,6 @@ package io.cdap.delta.bigquery;
 
 import com.google.cloud.bigquery.StandardSQLTypeName;
 import io.cdap.cdap.api.data.schema.Schema;
-import io.cdap.delta.api.assessment.Assessment;
 import io.cdap.delta.api.assessment.ColumnAssessment;
 import io.cdap.delta.api.assessment.ColumnSuggestion;
 import io.cdap.delta.api.assessment.ColumnSupport;
@@ -29,16 +28,22 @@ import io.cdap.delta.api.assessment.TableAssessor;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 
 /**
  * Assesses table information.
  */
 public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> {
   private final String stagingTablePrefix;
+  // tables already assessed so far, key is table name and value is schema name
+  private final Map<String, String> tableToSchema;
 
   BigQueryAssessor(String stagingTablePrefix) {
     this.stagingTablePrefix = stagingTablePrefix;
+    this.tableToSchema  = new HashMap<>();
   }
 
   @Override
@@ -61,6 +66,21 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
     List<Problem> problems = new ArrayList<>();
     String dbName = tableDetail.getDatabase();
     String tableName = tableDetail.getTable();
+
+
+    if (tableToSchema.containsKey(tableName)) {
+      // TODO support same table name in different schema
+      if (!Objects.equals(tableToSchema.get(tableName), tableDetail.getSchemaName())) {
+        problems.add(new Problem("Duplicate Table Name", String.format("Table with name '%s' found in two different " +
+            "schemas, '%s' and '%s'. BigQuery target requires table names to be unique across the schemas. Please " +
+            "select table from one of the schemas only for replication.", tableName, tableToSchema.get(tableName),
+          tableDetail.getSchemaName()), "Please only select one of the tables with same table name to replicate",
+          "Not be able to replicate multiple tables with same name to BigQuery"));
+      }
+      // else if schema name is same, that means it's assessing the same table.
+    } else {
+      tableToSchema.put(tableName, tableDetail.getSchemaName());
+    }
     String stagingTableName = stagingTablePrefix + tableName;
     if (tableDetail.getPrimaryKey().isEmpty()) {
       problems.add(
