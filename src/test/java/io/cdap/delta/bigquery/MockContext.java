@@ -29,6 +29,7 @@ import io.cdap.delta.api.ReplicationError;
 import io.cdap.delta.api.SourceProperties;
 import io.cdap.delta.api.SourceTable;
 
+import java.io.IOException;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -66,6 +67,12 @@ public class MockContext implements DeltaTargetContext {
   @Override
   public void setTableError(String s, String s1, ReplicationError replicationError) {
     // no-op
+  }
+
+  @Override
+  public void setTableError(String s, @Nullable String s1, String s2,
+                            ReplicationError replicationError) throws IOException {
+
   }
 
   @Override
