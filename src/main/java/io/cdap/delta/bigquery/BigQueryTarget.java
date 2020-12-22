@@ -27,12 +27,14 @@ import com.google.cloud.storage.BucketInfo;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.StorageException;
 import com.google.cloud.storage.StorageOptions;
+import com.google.common.base.Joiner;
 import io.cdap.cdap.api.annotation.Description;
 import io.cdap.cdap.api.annotation.Macro;
 import io.cdap.cdap.api.annotation.Name;
 import io.cdap.cdap.api.annotation.Plugin;
 import io.cdap.cdap.api.plugin.PluginConfig;
 import io.cdap.delta.api.Configurer;
+import io.cdap.delta.api.DeltaPipelineId;
 import io.cdap.delta.api.DeltaTarget;
 import io.cdap.delta.api.DeltaTargetContext;
 import io.cdap.delta.api.EventConsumer;
@@ -54,6 +56,7 @@ import javax.annotation.Nullable;
 @Plugin(type = DeltaTarget.PLUGIN_TYPE)
 public class BigQueryTarget implements DeltaTarget {
   public static final String NAME = "bigquery";
+  private static final String STAGING_BUCKET_PREFIX = "df-rbq";
   private final Conf conf;
 
   @SuppressWarnings("unused")
@@ -85,21 +88,28 @@ public class BigQueryTarget implements DeltaTarget {
       .setProjectId(project)
       .build()
       .getService();
-    // TODO: make bucket optional
-    Bucket bucket = storage.get(conf.stagingBucket);
+
+    String stagingBucketName = conf.stagingBucket == null ? null : conf.stagingBucket.trim();
+    if (stagingBucketName == null || stagingBucketName.isEmpty()) {
+      stagingBucketName = stringifyPipelineId(context.getPipelineId());
+    }
+    stagingBucketName = stagingBucketName.toLowerCase();
+    Bucket bucket = storage.get(stagingBucketName);
     if (bucket == null) {
       try {
-        // TODO: make bucket location configurable
-        BucketInfo.Builder builder = BucketInfo.newBuilder(conf.stagingBucket);
+        BucketInfo.Builder builder = BucketInfo.newBuilder(stagingBucketName);
         if (cmekKey != null) {
           builder.setDefaultKmsKeyName(cmekKey);
+        }
+        if (conf.stagingBucketLocation != null && !conf.stagingBucketLocation.trim().isEmpty()) {
+          builder.setLocation(conf.stagingBucketLocation);
         }
         bucket = storage.create(builder.build());
       } catch (StorageException e) {
         throw new IOException(
           String.format("Unable to create staging bucket '%s' in project '%s'. "
                           + "Please make sure the service account has permission to create buckets, "
-                          + "or create the bucket before starting the program.", conf.stagingBucket, project), e);
+                          + "or create the bucket before starting the program.", stagingBucketName, project), e);
       }
     }
 
@@ -111,6 +121,11 @@ public class BigQueryTarget implements DeltaTarget {
   @Override
   public TableAssessor<StandardizedTableDetail> createTableAssessor(Configurer configurer) {
     return new BigQueryAssessor(conf.stagingTablePrefix);
+  }
+
+  private String stringifyPipelineId(DeltaPipelineId pipelineId) {
+    return Joiner.on("-").join(STAGING_BUCKET_PREFIX, pipelineId.getNamespace(), pipelineId.getApp(),
+                               pipelineId.getGeneration());
   }
 
   /**
@@ -131,11 +146,20 @@ public class BigQueryTarget implements DeltaTarget {
       + "'auto-detect', which will use the service account key on the VM.")
     private String serviceAccountKey;
 
-    @Description("GCS bucket to write the change events to before loading them into the staging tables. "
+    @Nullable
+    @Description("GCS bucket to write the change events to before loading them into the BigQuery staging tables. "
       + "This bucket can be shared across multiple delta pipelines within the same CDAP instance. "
       + "The bucket must be in the same location as the BigQuery datasets that are being written to. "
-      + "If the BigQuery datasets do not already exist, they will be created in the same location as the bucket.")
+      + "If the BigQuery datasets do not already exist, they will be created in the same location as the bucket."
+      + "If not provided, new bucket will be created for each pipeline named as "
+      + "'df-rbq-<namespace-name>-<pipeline-name>-<deployment-timestamp>'. Note that user will have to explicitly "
+      + "delete the bucket once the pipeline is deleted.")
     private String stagingBucket;
+
+    @Nullable
+    @Description("The location where the staging gcs bucket will get created. "
+      + "This value is ignored if the bucket already exists.")
+    protected String stagingBucketLocation;
 
     @Nullable
     @Description("Changes are first written to a staging table before being merged to the final table. "
