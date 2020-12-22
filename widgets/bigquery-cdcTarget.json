@@ -14,11 +14,6 @@
           "widget-attributes": {
             "default": "auto-detect"
           }
-        },
-        {
-          "name": "stagingBucket",
-          "label": "Staging Bucket",
-          "widget-type": "textbox"
         }
       ]
     },
@@ -35,6 +30,19 @@
     {
       "label" : "Advanced",
       "properties" : [
+        {
+          "name": "stagingBucket",
+          "label": "Staging Bucket",
+          "widget-type": "textbox"
+        },
+        {
+          "name": "stagingBucketLocation",
+          "label": "Staging Bucket Location",
+          "widget-type": "textbox",
+          "widget-attributes": {
+            "default": "us"
+          }
+        },
         {
           "name": "loadInterval",
           "label": "Load Interval (seconds)",
