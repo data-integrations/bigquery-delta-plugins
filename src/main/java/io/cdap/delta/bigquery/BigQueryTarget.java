@@ -27,6 +27,7 @@ import com.google.cloud.storage.BucketInfo;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.StorageException;
 import com.google.cloud.storage.StorageOptions;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
 import io.cdap.cdap.api.annotation.Description;
 import io.cdap.cdap.api.annotation.Macro;
@@ -56,7 +57,8 @@ import javax.annotation.Nullable;
 @Plugin(type = DeltaTarget.PLUGIN_TYPE)
 public class BigQueryTarget implements DeltaTarget {
   public static final String NAME = "bigquery";
-  private static final String STAGING_BUCKET_PREFIX = "df-rbq";
+  public static final String STAGING_BUCKET_PREFIX = "df-rbq";
+  private static final String GCS_SCHEME = "gs://";
   private final Conf conf;
 
   @SuppressWarnings("unused")
@@ -89,11 +91,7 @@ public class BigQueryTarget implements DeltaTarget {
       .build()
       .getService();
 
-    String stagingBucketName = conf.stagingBucket == null ? null : conf.stagingBucket.trim();
-    if (stagingBucketName == null || stagingBucketName.isEmpty()) {
-      stagingBucketName = stringifyPipelineId(context.getPipelineId());
-    }
-    stagingBucketName = stagingBucketName.toLowerCase();
+    String stagingBucketName = getStagingBucketName(conf.stagingBucket, context.getPipelineId());
     Bucket bucket = storage.get(stagingBucketName);
     if (bucket == null) {
       try {
@@ -118,12 +116,24 @@ public class BigQueryTarget implements DeltaTarget {
                                      conf.requiresManualDrops(), encryptionConfig, null);
   }
 
+  @VisibleForTesting
+  static String getStagingBucketName(@Nullable String providedBucketName, DeltaPipelineId pipelineId) {
+    String stagingBucketName = providedBucketName == null ? null : providedBucketName.trim();
+    if (stagingBucketName == null || stagingBucketName.isEmpty()) {
+      stagingBucketName = stringifyPipelineId(pipelineId);
+    }
+    if (stagingBucketName.startsWith(GCS_SCHEME)) {
+      stagingBucketName = stagingBucketName.substring(GCS_SCHEME.length());
+    }
+    return stagingBucketName.toLowerCase();
+  }
+
   @Override
   public TableAssessor<StandardizedTableDetail> createTableAssessor(Configurer configurer) {
     return new BigQueryAssessor(conf.stagingTablePrefix);
   }
 
-  private String stringifyPipelineId(DeltaPipelineId pipelineId) {
+  private static String stringifyPipelineId(DeltaPipelineId pipelineId) {
     return Joiner.on("-").join(STAGING_BUCKET_PREFIX, pipelineId.getNamespace(), pipelineId.getApp(),
                                pipelineId.getGeneration());
   }
