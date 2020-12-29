@@ -240,6 +240,7 @@ public class BigQueryEventConsumer implements EventConsumer {
         // just return and let things end
       } catch (Exception e) {
         flushException = e;
+        LOG.warn("Exception during flushing the in-memory content to GCS bucket.", e);
       }
     }, loadIntervalSeconds, loadIntervalSeconds, TimeUnit.SECONDS);
   }
@@ -538,6 +539,8 @@ public class BigQueryEventConsumer implements EventConsumer {
     // if this throws an IOException, we want to propagate it, since we need the app to reset state to the last
     // commit and replay events. This is because previous events are written directly to an outputstream to GCS
     // and then dropped, so we cannot simply retry the flush here.
+    // If flush throws an exception, we also clear the in-memory TableObject corresponding to the table for
+    // which the IOException was thrown to avoid the duplicates.
     try {
       tableBlobs = gcsWriter.flush();
     } catch (IOException e) {
