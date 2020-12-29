@@ -78,6 +78,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import javax.annotation.Nullable;
@@ -180,12 +181,12 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final long baseRetryDelay;
   private final int maxClusteringColumns;
   private final boolean sourceRowIdSupported;
-  private ScheduledExecutorService scheduledExecutorService;
+  private final ScheduledExecutorService scheduledExecutorService;
+  private final ExecutorService executorService;
+  private final AtomicReference<Exception> flushException;
   private ScheduledFuture<?> scheduledFlush;
-  private ExecutorService executorService;
   private Offset latestOffset;
   private long latestSequenceNum;
-  private Exception flushException;
   // have to keep all the records in memory in case there is a failure writing to GCS
   // cannot write to a temporary file on local disk either in case there is a failure writing to disk
   // Without keeping the entire batch in memory, there would be no way to recover the records that failed to write
@@ -229,6 +230,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     this.maxClusteringColumns = maxClusteringColumnsStr == null ? 4 : Integer.parseInt(maxClusteringColumnsStr);
     this.sourceRowIdSupported =
       context.getSourceProperties() == null ? false : context.getSourceProperties().isRowIdSupported();
+    this.flushException = new AtomicReference<>();
   }
 
   @Override
@@ -239,7 +241,10 @@ public class BigQueryEventConsumer implements EventConsumer {
       } catch (InterruptedException e) {
         // just return and let things end
       } catch (Exception e) {
-        flushException = e;
+        flushException.set(e);
+        LOG.warn("Exception during flushing the in-memory content to GCS bucket.", e);
+        // throwing here will stop the next invocation of the task.
+        throw new RuntimeException(e);
       }
     }, loadIntervalSeconds, loadIntervalSeconds, TimeUnit.SECONDS);
   }
@@ -262,8 +267,8 @@ public class BigQueryEventConsumer implements EventConsumer {
   @Override
   public synchronized void applyDDL(Sequenced<DDLEvent> sequencedEvent) throws Exception {
     // this is non-null if an error happened during a time scheduled flush
-    if (flushException != null) {
-      throw flushException;
+    if (flushException.get() != null) {
+      throw flushException.get();
     }
 
     DDLEvent event = sequencedEvent.getEvent();
@@ -500,8 +505,8 @@ public class BigQueryEventConsumer implements EventConsumer {
   @Override
   public synchronized void applyDML(Sequenced<DMLEvent> sequencedEvent) throws Exception {
     // this is non-null if an error happened during a time scheduled flush
-    if (flushException != null) {
-      throw flushException;
+    if (flushException.get() != null) {
+      throw flushException.get();
     }
 
     DMLEvent event = sequencedEvent.getEvent();
@@ -538,10 +543,12 @@ public class BigQueryEventConsumer implements EventConsumer {
     // if this throws an IOException, we want to propagate it, since we need the app to reset state to the last
     // commit and replay events. This is because previous events are written directly to an outputstream to GCS
     // and then dropped, so we cannot simply retry the flush here.
+    // If flush throws an exception, we also clear the in-memory TableObject corresponding to the table for
+    // which the IOException was thrown to avoid the duplicates.
     try {
       tableBlobs = gcsWriter.flush();
     } catch (IOException e) {
-      flushException = e;
+      flushException.set(e);
       throw e;
     }
 
@@ -966,7 +973,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     } catch (TimeoutExceededException e) {
       // if the retry timeout was reached, throw a DeltaFailureException to fail the pipeline immediately
       DeltaFailureException exc = new DeltaFailureException(retriesExhaustedMessage, e);
-      flushException = exc;
+      flushException.set(exc);
       throw exc;
     } catch (FailsafeException e) {
       if (e.getCause() instanceof InterruptedException) {

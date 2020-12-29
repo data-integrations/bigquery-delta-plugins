@@ -103,6 +103,11 @@ public class MultiGCSWriter {
                                         tableObject.numEvents, tableObject.dataset, tableObject.table);
           context.setTableError(tableObject.dataset, tableObject.sourceDbSchemaName, tableObject.table,
                                 new ReplicationError(errMsg, e.getStackTrace()));
+          // Clear the TableObject for this key which holds the sequenced events.
+          // This exception is propagated to the app, so the app resets the state and replays events from
+          // last committed offset. However if we don't clear the in-memory records, then there is possiblity of
+          // duplicates.
+          objects.remove(entry.getKey());
           throw new IOException(errMsg, e);
         }
         LOG.debug("Wrote batch {} of {} events into GCS for table {}.{}", tableObject.batchId, tableObject.numEvents,
