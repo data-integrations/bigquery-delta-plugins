@@ -290,12 +290,29 @@ public class BigQueryEventConsumer implements EventConsumer {
       throw e;
     }
 
-    latestOffset = event.getOffset();
-    latestSequenceNum = sequencedEvent.getSequenceNumber();
+    long sequenceNumber = sequencedEvent.getSequenceNumber();
     if (normalizedTableName != null) {
-      latestSeenSequence.put(TableId.of(project, normalizedDatabaseName, normalizedTableName),
-                             sequencedEvent.getSequenceNumber());
+      TableId tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
+      Long latestMergedSequencedNum = latestMergedSequence.get(tableId);
+      if (latestMergedSequencedNum == null) {
+        // first event of the table
+        latestMergedSequencedNum  = getLatestSequenceNum(tableId);
+        latestMergedSequence.put(tableId, latestMergedSequencedNum);
+        // latestSeenSequence will replace the latestMergedSequence at the end of flush()
+        // set this default value to avoid dup query of max merged sequence num in next `flush()`
+        latestSeenSequence.put(tableId, latestMergedSequencedNum);
+      }
+
+      // it's possible that some previous events were merged to target table but offset were not committed
+      // because offset is committed when the whole batch of all the tables were merged.
+      // so it's possible we see an event that was already merged to target table
+      if (sequenceNumber > latestMergedSequencedNum) {
+        latestSeenSequence.put(tableId, sequenceNumber);
+      }
     }
+
+    latestOffset = event.getOffset();
+    latestSequenceNum = sequenceNumber;
     context.incrementCount(event.getOperation());
     if (event.isSnapshot()) {
       context.setTableSnapshotting(normalizedDatabaseName, normalizedTableName);
@@ -515,10 +532,22 @@ public class BigQueryEventConsumer implements EventConsumer {
     gcsWriter.write(new Sequenced<>(normalizedDMLEvent, sequenceNumber));
 
     TableId tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
-    latestSeenSequence.put(tableId, sequenceNumber);
 
-    if (!latestMergedSequence.containsKey(tableId)) {
-      latestMergedSequence.put(tableId, getLatestSequenceNum(tableId));
+    Long latestMergedSequencedNum = latestMergedSequence.get(tableId);
+    if (latestMergedSequencedNum == null) {
+      // first event of the table
+      latestMergedSequencedNum  = getLatestSequenceNum(tableId);
+      latestMergedSequence.put(tableId, latestMergedSequencedNum);
+      // latestSeenSequence will replace the latestMergedSequence at the end of flush()
+      // set this default value to avoid dup query of max merged sequence num in next `flush()`
+      latestSeenSequence.put(tableId, latestMergedSequencedNum);
+    }
+
+    // it's possible that some previous events were merged to target table but offset were not committed
+    // because offset is committed when the whole batch of all the tables were merged.
+    // so it's possible we see an event that was already merged to target table
+    if (sequenceNumber > latestMergedSequencedNum) {
+      latestSeenSequence.put(tableId, sequenceNumber);
     }
 
     latestOffset = event.getOffset();
