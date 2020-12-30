@@ -923,13 +923,14 @@ public class BigQueryEventConsumer implements EventConsumer {
       return !field.getName().equals(Constants.ROW_ID);
     };
 
-    // sequence number can decide whether it's a dup event
+    // sequence number is incremental
+    // it can decide whether it's a duplicate event, in diff query we already make sure only events with
+    // sequence number greater than the max sequence number in target table can be merged.
     // if events are unordered , source timestamp can decide the ordering
-    // if an event happening earlier comes later , it's possible that some events happening later agains the same
+    // if an event happening earlier comes later , it's possible that some events happening later against the same
     // row has already been merged, so this late coming event should be ignored.
-    String updateAndDeleteCondition =
-      String.format("AND D.%s > T.%1$s ", Constants.SEQUENCE_NUM) + (sourceEventOrdering ==
-    SourceProperties.Ordering.ORDERED ? "" : String.format("AND D.%s >= T.%1$s ", Constants.SOURCE_TIMESTAMP));
+    String updateAndDeleteCondition = sourceEventOrdering == SourceProperties.Ordering.ORDERED ? "" :
+      String.format("AND D.%s >= T.%1$s ", Constants.SOURCE_TIMESTAMP);
 
     return "MERGE " +
       targetTableId.getDataset() + "." + targetTableId.getTable() + " as T\n" +
