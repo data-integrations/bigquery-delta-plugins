@@ -51,6 +51,7 @@ import io.cdap.delta.api.EventConsumer;
 import io.cdap.delta.api.Offset;
 import io.cdap.delta.api.ReplicationError;
 import io.cdap.delta.api.Sequenced;
+import io.cdap.delta.api.SourceProperties;
 import net.jodah.failsafe.Failsafe;
 import net.jodah.failsafe.FailsafeException;
 import net.jodah.failsafe.RetryPolicy;
@@ -180,6 +181,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final long baseRetryDelay;
   private final int maxClusteringColumns;
   private final boolean sourceRowIdSupported;
+  private final SourceProperties.Ordering sourceEventOrdering;
   private ScheduledExecutorService scheduledExecutorService;
   private ScheduledFuture<?> scheduledFlush;
   private ExecutorService executorService;
@@ -229,6 +231,8 @@ public class BigQueryEventConsumer implements EventConsumer {
     this.maxClusteringColumns = maxClusteringColumnsStr == null ? 4 : Integer.parseInt(maxClusteringColumnsStr);
     this.sourceRowIdSupported =
       context.getSourceProperties() == null ? false : context.getSourceProperties().isRowIdSupported();
+    this.sourceEventOrdering = context.getSourceProperties() == null ? SourceProperties.Ordering.ORDERED :
+      context.getSourceProperties().getOrdering();
   }
 
   @Override
@@ -476,11 +480,12 @@ public class BigQueryEventConsumer implements EventConsumer {
     return primaryKeys;
   }
 
-  private Schema addSupplementaryColumnsToTargetSchema(Schema original) {
-    List<Schema.Field> fields = new ArrayList<>(original.getFields().size() + 3);
+  static Schema addSupplementaryColumnsToTargetSchema(Schema original) {
+    List<Schema.Field> fields = new ArrayList<>(original.getFields().size() + 4);
     fields.add(Schema.Field.of(Constants.SEQUENCE_NUM, Schema.of(Schema.Type.LONG)));
     fields.add(Schema.Field.of(Constants.IS_DELETED, Schema.nullableOf(Schema.of(Schema.Type.BOOLEAN))));
     fields.add(Schema.Field.of(Constants.ROW_ID, Schema.nullableOf(Schema.of(Schema.Type.STRING))));
+    fields.add(Schema.Field.of(Constants.SOURCE_TIMESTAMP, Schema.nullableOf(Schema.of(Schema.Type.LONG))));
     fields.addAll(original.getFields());
     return Schema.recordOf(original.getRecordName() + ".sequenced", fields);
   }
@@ -662,9 +667,9 @@ public class BigQueryEventConsumer implements EventConsumer {
     /*
      * Merge data from staging BQ table into target table.
      *
-     * Two independent cases to be considered while performing merge operation:
+     * Four independent cases to be considered while performing merge operation:
      *
-     * Case 1: Source generates events without row id.
+     * Case 1: Source generates events without row id and events are ordered.
      *
      * If the source table has two columns -- id and name -- the staging table will look something like:
      *
@@ -687,7 +692,7 @@ public class BigQueryEventConsumer implements EventConsumer {
      * WHEN MATCHED AND D._op IN ("INSERT", "UPDATE")
      *   UPDATE id = D.id, name = D.name
      * WHEN NOT MATCHED AND D._op IN ("INSERT", "UPDATE")
-     *   INSERT (id, name) VALUES (id, name)
+     *   INSERT (_sequence_num, id, name) VALUES (D._sequence_num, name)
      *
      * where the $DIFF_QUERY is:
      *
@@ -710,8 +715,32 @@ public class BigQueryEventConsumer implements EventConsumer {
      * some results into the target table, but died before it could commit its offset, the merge query could end up
      * doing the wrong thing because what goes into a batch is not deterministic due to the time bound on batches.
      *
+     * Case 2: Source generates events without row id and events are unordered.
+     * The major differences between Case 1 and Case 2 are that:
+     * a. When merging a delete event, instead of deleting the row, we update the '_is_delete' column to true.
+     *    Because it's possible that an earlier happening update event comes late, if we delete the row, this late
+     *    coming update event will insert a new row. second difference makes sure such event will be ignored.
+     * b. When merging delete and update event, we add an additional condition :
+     *    D._source_timestamp >= T._source_timestamp
+     *    Because it's possible that an earlier happening update event comes late, we should ignore such event, if
+     *    events happening later than this event has already been applied to target table.
      *
-     * Case 2: Source generates events with row id.
+     * So the merge query would be :
+     *
+     * MERGE [target table] as T
+     * USING ($DIFF_QUERY) as D
+     * ON T.id = D._before_id
+     * WHEN MATCHED AND D._op = "DELETE" AND D._source_timestamp >= T._source_timestamp
+     *   UPDATE SET T._is_deleted = true
+     * WHEN MATCHED AND D._op IN ("INSERT", "UPDATE") AND D._source_timestamp >= T._source_timestamp
+     *   UPDATE id = D.id, name = D.name
+     * WHEN NOT MATCHED AND D._op IN ("INSERT", "UPDATE")
+     *   INSERT (_sequence_num, _is_deleted, _source_timestamp, id, name) VALUES (D._sequence_num, false, D
+     * ._source_timestamp, id, name)
+     *
+     * The purpose and form of $DIFF_QUERY are exactly same as case 2.
+     *
+     * Case 3: Source generates events with row id and events are ordered.
      *
      * If the source table has two columns -- id and name -- the staging table will look something like:
      *
@@ -731,23 +760,22 @@ public class BigQueryEventConsumer implements EventConsumer {
      *  USING ($DIFF_QUERY) as D
      * ON T.row_id = D.row_id
      * WHEN MATCHED AND D.op = “DELETE”
-     *  UPDATE _is_deleted = true
+     *    DELETE
      * WHEN MATCHED AND D.op IN (“INSERT”, “UPDATE”)
-     *              AND D._sequence_num > T._sequence_num
      *    UPDATE _sequence_num = D._sequence_num, id = D.id, name = D.name
      * WHEN NOT MATCHED
-     *    INSERT (_sequence_num, _row_id, _is_deleted, id, name) VALUES
-     *           (D._sequence_num, D._row_id, false, D.id, D.name)
+     *    INSERT (_sequence_num, _row_id, id, name) VALUES
+     *           (D._sequence_num, D._row_id, D.id, D.name)
      *
      *
      * where the $DIFF_QUERY is:
      *
      * SELECT A.* FROM
      *      (SELECT * FROM [staging table]
-     *          WHERE batch_id = 12345 AND _sequence_num > $LATEST_APPLIED) as A
+     *          WHERE batch_id = 1234567890 AND _sequence_num > $LATEST_APPLIED) as A
      *      LEFT OUTER JOIN
      *      (SELECT * FROM [staging table]
-     *          WHERE _batch_id = 12345 AND _sequence_num > $LATEST_APPLIED) as B
+     *          WHERE _batch_id = 1234567890 AND _sequence_num > $LATEST_APPLIED) as B
      *      ON A._row_id = B._row_id AND A._sequence_num < B._sequence_num
      * WHERE B._row_id IS NULL
      *
@@ -759,13 +787,41 @@ public class BigQueryEventConsumer implements EventConsumer {
      * | _batch_id      | _sequence_num     | _op    | _row_id | id | name
      * | 1234567890     |       60          | INSERT |  ABCD   | 0  | alice
      * | 1234567890     |       80          | UPDATE |  ABCE   | 1  | Bob
+     *
+     *
+     *  Case 4: Source generates events with row id and events are unordered.
+     *  Similar as the differences between Case 1 & Case 2, the differences between Case 3 and Case 4 are that:
+     * a. When merging a delete event, instead of deleting the row, we update the '_is_delete' column to true.
+     *    Because it's possible that an earlier happening update event comes late, if we delete the row, this late
+     *    coming update event will insert a new row. second difference makes sure such event will be ignored.
+     * b. When merging delete and update event, we add an additional condition :
+     *    D._source_timestamp >= T._source_timestamp
+     *    Because it's possible that an earlier happening update event comes late, we should ignore such event, if
+     *    events happening later than this event has already been applied to target table.
+     *
+     * So the merge query would be :
+     *
+     * MERGE [target table] as T
+     *  USING ($DIFF_QUERY) as D
+     * ON T.row_id = D.row_id
+     * WHEN MATCHED AND D.op = “DELETE” AND D._source_timestamp >= T._source_timestamp
+     *    UPDATE _is_deleted = true
+     * WHEN MATCHED AND D.op IN (“INSERT”, “UPDATE”) AND D._source_timestamp >= T._source_timestamp
+     *    UPDATE _sequence_num = D._sequence_num, _source_timestamp = D._source_timestamp, id = D.id, name = D.name
+     * WHEN NOT MATCHED
+     *    INSERT (_sequence_num, _row_id, _source_timestamp, _is_deleted, id, name) VALUES
+     *           (D._sequence_num, D._row_id, D._source_timestamp, false, D.id, D.name)
+     *
+     * The purpose and form of $DIFF_QUERY are exactly same as case 3.
      */
 
-    String diffQuery = createDiffQuery(stagingTableId, primaryKeys, blob.getBatchId(),
-                                       latestMergedSequence.get(targetTableId), sourceRowIdSupported);
+    String diffQuery =
+      createDiffQuery(stagingTableId, primaryKeys, blob.getBatchId(), latestMergedSequence.get(targetTableId),
+        sourceRowIdSupported);
 
     String mergeQuery =
-      createMergeQuery(targetTableId, primaryKeys, blob.getTargetSchema(), diffQuery, sourceRowIdSupported);
+      createMergeQuery(targetTableId, primaryKeys, blob.getTargetSchema(), diffQuery, sourceRowIdSupported,
+        sourceEventOrdering);
 
     QueryJobConfiguration.Builder jobConfigBuilder = QueryJobConfiguration.newBuilder(mergeQuery);
     if (encryptionConfig != null) {
@@ -788,7 +844,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   static String createDiffQuery(TableId stagingTable, List<String> primaryKeys, long batchId,
-                                Long latestSequenceNumInTargetTable, boolean sourceRowIdSupported) {
+    Long latestSequenceNumInTargetTable, boolean sourceRowIdSupported) {
     String joinCondition;
     String whereClause;
     if (sourceRowIdSupported) {
@@ -844,60 +900,62 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   static String createMergeQuery(TableId targetTableId, List<String> primaryKeys, Schema targetSchema,
-                                 String diffQuery, boolean sourceRowIdSupported) {
+    String diffQuery, boolean sourceRowIdSupported, SourceProperties.Ordering sourceEventOrdering) {
     String mergeCondition;
-    String deleteOperation;
+
+
+    /*
+     * Merge query will be of the following form:
+     *
+     * MERGE [target table] as T
+     * USING ($DIFF_QUERY) as D
+     * ON ($MERGE_CONDITION)
+     * WHEN MATCHED AND D._op = "DELETE" ($UPDATE_AND_DELETE_CONDITION) THEN
+     *   ($DELETE_OPERATION)
+     * WHEN MATCHED AND D._op IN ("INSERT", "UPDATE") ($UPDATE_AND_DELETE_CONDITION) THEN
+     *   UPDATE id = D.id, name = D.name
+     * WHEN NOT MATCHED AND D._op IN ("INSERT", "UPDATE") THEN
+     *   INSERT (id, name) VALUES (id, name)
+     *
+     * Following are the differences between events with/without row id.
+     * 1. For event with row Id, we use the row Id to match the row, $MERGE_CONDITION will be:
+     *    D._row_id = T._row_id
+     * 2. For event without row Id, we use primary keys to match the row, $MERGE_CONDITION will be (assuming id is the
+     * PK):
+     *    T.id = D._before_id
+     *
+     * Following are the differences between ordered and un-ordered events:
+     * 1. For Ordered events, the $DELETE_OPERATION will be :
+     *    DELETE
+     *    That is we delete the row directly for merging delete event
+     * 2. For Un-ordered events , the $DELETE_OPERATION will be :
+     *    UPDATE SET T._is_deleted = true
+     *    This is not to delete the row for merging delete event but to update the '_is_delete' column to true.
+     *    Because it's possible that an earlier happening update event comes late, if we delete the row, this late
+     *    coming update event will insert a new row. While difference 4. makes sure such event will be ignored.
+     * 3. For Ordered events, $UPDATE_AND_DELETE_CONDITION will be :
+     *    ""
+     *    Which means no additional conditions is needed
+     * 4. For Un-ordered events, $UPDATE_AND_DELETE_CONDITION will be :
+     *    D._source_timestamp >= T._source_timestamp
+     *    Because it's possible that an earlier happening update event comes late, we should ignore such event, if
+     *    events happening later than this event has already been applied to target table.
+     */
 
     if (sourceRowIdSupported) {
-      /*
-       * Merge query will be of the following form:
-       *
-       * MERGE [target table] as T
-       *  USING ($DIFF_QUERY) as D
-       * ON T._row_id = D._row_id
-       * WHEN MATCHED AND D.op = “DELETE”
-       *    UPDATE _is_deleted = true
-       * WHEN MATCHED AND D.op IN (“UPDATE”)
-       *              AND D._sequence_num > T._sequence_num
-       *    UPDATE _sequence_num = D._sequence_num, id = D.id, name = D.name
-       * WHEN NOT MATCHED
-       *    INSERT (_sequence_num, _row_id, _is_deleted, id, name) VALUES
-       *           (D._sequence_num, D._row_id, false, D.id, D.name)
-       *
-       * Following are the differences compared to merge query for events with row id.
-       * 1. join condition used for the merge query includes _row_id.
-       * 2. when match happens for DELETE operation, update _is_deleted in the target table to true
-       * 3. when no match insert the new row
-       */
+      // if source supports row Id , we use row id to match the row
       mergeCondition = " T._row_id = D._row_id ";
-      deleteOperation = "  UPDATE SET _is_deleted = true ";
+
     } else {
-      /*
-       * Merge query will be of the following form:
-       *
-       * MERGE [target table] as T
-       * USING ($DIFF_QUERY) as D
-       * ON T.id = D._before_id
-       * WHEN MATCHED AND D._op = "DELETE" THEN
-       *   DELETE
-       * WHEN MATCHED AND D._op IN ("INSERT", "UPDATE") THEN
-       *   UPDATE id = D.id, name = D.name
-       * WHEN NOT MATCHED AND D._op IN ("INSERT", "UPDATE") THEN
-       *   INSERT (id, name) VALUES (id, name)
-       *
-       * Following are the differences compared to merge query for events with row id.
-       * 1. join condition used for the merge query includes primary keys.
-       * 2. when match happens for DELETE operation, issue DELETE command
-       */
+      // if source doesn't support row Id, we use primary keys to match the row
       mergeCondition = primaryKeys.stream()
         .map(name -> String.format("T.%s = D._before_%s", name, name))
         .collect(Collectors.joining(" AND "));
 
-      deleteOperation = "  DELETE";
     }
 
-    // target table schema always contains nullable fields such as _is_deleted, _row_id.
-    // however for ORDERED source, these fields are not in the staging table, so filter out these fields before
+    // target table schema always contains nullable fields such as _is_deleted, _row_id and _source_timestamp.
+    // however these fields may not be in the staging table, so filter out these fields before
     // we perform INSERT/UPDATE queries based on the values from the staging table.
     final Predicate<Schema.Field> predicate = field -> {
       // filter out _is_deleted field for operations INSERT and UPDATE as it will be set when
@@ -905,25 +963,51 @@ public class BigQueryEventConsumer implements EventConsumer {
       if (field.getName().equals(Constants.IS_DELETED)) {
         return false;
       }
+
+      if (field.getName().equals(Constants.SOURCE_TIMESTAMP)) {
+        return sourceEventOrdering == SourceProperties.Ordering.UN_ORDERED;
+      }
+
       if (sourceRowIdSupported) {
         return true;
       }
-      // filter out the _row_id field for ORDERED source, as this field will not be present in the staging table.
+      // filter out the _row_id field for source that doesn't support row Id, as this field will not be present in the
+      // staging table.
       return !field.getName().equals(Constants.ROW_ID);
     };
+
+    String deleteOperation;
+    String updateAndDeleteCondition;
+
+    if (sourceEventOrdering == SourceProperties.Ordering.ORDERED) {
+      // for ordered events we can just delete the row for DELETE event
+      deleteOperation = "  DELETE";
+      // sequence number is incremental
+      // it can decide whether it's a duplicate event, in diff query we already make sure only events with
+      // sequence number greater than the max sequence number in target table can be merged.
+      // for ordered events , they can be directly applied to the row matched
+      updateAndDeleteCondition = "";
+    } else {
+      // for unordered events
+      deleteOperation = "  UPDATE SET _is_deleted = true ";
+      // if events are unordered , source timestamp can decide the ordering
+      // if an event happening earlier comes later , it's possible that some events happening later against the same
+      // row has already been merged, so this late coming event should be ignored.
+      updateAndDeleteCondition =  String.format("AND D.%s >= T.%1$s ", Constants.SOURCE_TIMESTAMP);
+    }
 
     return "MERGE " +
       targetTableId.getDataset() + "." + targetTableId.getTable() + " as T\n" +
       "USING (" + diffQuery + ") as D\n" +
       "ON " + mergeCondition + "\n" +
-      "WHEN MATCHED AND D._op = \"DELETE\" THEN\n" +
+      "WHEN MATCHED AND D._op = \"DELETE\" " + updateAndDeleteCondition + "THEN\n" +
       deleteOperation + "\n" +
       // In a case when a replicator is paused for too long and crashed when resumed
       // user will create a new replicator against the same target
       // in this case the target already has some data
       // so the new repliator's snapshot will generate insert events that match some existing data in the
       // targe. That's why in the match case, we still need the insert opertion.
-      "WHEN MATCHED AND D._op IN (\"INSERT\", \"UPDATE\") AND D._sequence_num > T._sequence_num THEN\n" +
+      "WHEN MATCHED AND D._op IN (\"INSERT\", \"UPDATE\") " + updateAndDeleteCondition + "THEN\n" +
       "  UPDATE SET " +
       targetSchema.getFields().stream()
         .filter(predicate)

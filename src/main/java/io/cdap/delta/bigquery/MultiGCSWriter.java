@@ -27,6 +27,7 @@ import io.cdap.delta.api.DMLOperation;
 import io.cdap.delta.api.DeltaTargetContext;
 import io.cdap.delta.api.ReplicationError;
 import io.cdap.delta.api.Sequenced;
+import io.cdap.delta.api.SourceProperties;
 import org.apache.avro.file.DataFileWriter;
 import org.apache.avro.io.DatumWriter;
 import org.slf4j.Logger;
@@ -59,6 +60,7 @@ public class MultiGCSWriter {
   private final DeltaTargetContext context;
   private final ExecutorService executorService;
   private final boolean rowIdSupported;
+  private final SourceProperties.Ordering eventOrdering;
 
   public MultiGCSWriter(Storage storage, String bucket, String baseObjectName,
                         DeltaTargetContext context, ExecutorService executorService) {
@@ -71,6 +73,8 @@ public class MultiGCSWriter {
     this.executorService = executorService;
     this.rowIdSupported = context.getSourceProperties() == null ? false :
       context.getSourceProperties().isRowIdSupported();
+    this.eventOrdering = context.getSourceProperties() == null ? SourceProperties.Ordering.ORDERED :
+      context.getSourceProperties().getOrdering();
   }
 
   public synchronized void write(Sequenced<DMLEvent> sequencedEvent) {
@@ -238,11 +242,12 @@ public class MultiGCSWriter {
     }
 
     private Schema getTargetSchema(Schema schema) {
-      List<Schema.Field> fields = new ArrayList<>(schema.getFields().size() + 3);
+      List<Schema.Field> fields = new ArrayList<>(schema.getFields().size() + 4);
       fields.addAll(schema.getFields());
       fields.add(Schema.Field.of(Constants.SEQUENCE_NUM, Schema.of(Schema.Type.LONG)));
       fields.add(Schema.Field.of(Constants.IS_DELETED, Schema.nullableOf(Schema.of(Schema.Type.BOOLEAN))));
       fields.add(Schema.Field.of(Constants.ROW_ID, Schema.nullableOf(Schema.of(Schema.Type.STRING))));
+      fields.add(Schema.Field.of(Constants.SOURCE_TIMESTAMP, Schema.nullableOf(Schema.of(Schema.Type.LONG))));
       return Schema.recordOf(schema.getRecordName() + ".target", fields);
     }
 
@@ -279,11 +284,18 @@ public class MultiGCSWriter {
         rowIdSupported ? schema.getFields().size() + 4 // source schema fields + _op, _batch_id, _sequence_num, _row_id
           : 2 * schema.getFields().size() + 3; // (source schema + _before_ columns) + _op, _batch_id, _sequence_num
 
+      if (eventOrdering == SourceProperties.Ordering.UN_ORDERED) {
+        // add column _source_timestamp
+        fieldLength++;
+      }
       List<Schema.Field> fields = new ArrayList<>(fieldLength);
 
       fields.add(Schema.Field.of(Constants.OPERATION, Schema.of(Schema.Type.STRING)));
       fields.add(Schema.Field.of(Constants.BATCH_ID, Schema.of(Schema.Type.LONG)));
       fields.add(Schema.Field.of(Constants.SEQUENCE_NUM, Schema.of(Schema.Type.LONG)));
+      if (eventOrdering == SourceProperties.Ordering.UN_ORDERED) {
+        fields.add(Schema.Field.of(Constants.SOURCE_TIMESTAMP, Schema.of(Schema.Type.LONG)));
+      }
 
       // add all fields from source schema
       fields.addAll(schema.getFields());
@@ -314,6 +326,10 @@ public class MultiGCSWriter {
 
       for (Schema.Field field : row.getSchema().getFields()) {
         builder.set(field.getName(), row.get(field.getName()));
+      }
+
+      if (eventOrdering == SourceProperties.Ordering.UN_ORDERED) {
+        builder.set(Constants.SOURCE_TIMESTAMP, event.getSourceTimestampMillis());
       }
 
       if (rowIdSupported) {
