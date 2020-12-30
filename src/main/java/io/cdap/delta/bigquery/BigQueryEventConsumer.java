@@ -51,6 +51,7 @@ import io.cdap.delta.api.EventConsumer;
 import io.cdap.delta.api.Offset;
 import io.cdap.delta.api.ReplicationError;
 import io.cdap.delta.api.Sequenced;
+import io.cdap.delta.api.SourceProperties;
 import net.jodah.failsafe.Failsafe;
 import net.jodah.failsafe.FailsafeException;
 import net.jodah.failsafe.RetryPolicy;
@@ -180,6 +181,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final long baseRetryDelay;
   private final int maxClusteringColumns;
   private final boolean sourceRowIdSupported;
+  private final SourceProperties.Ordering sourceEventOrdering;
   private ScheduledExecutorService scheduledExecutorService;
   private ScheduledFuture<?> scheduledFlush;
   private ExecutorService executorService;
@@ -229,6 +231,8 @@ public class BigQueryEventConsumer implements EventConsumer {
     this.maxClusteringColumns = maxClusteringColumnsStr == null ? 4 : Integer.parseInt(maxClusteringColumnsStr);
     this.sourceRowIdSupported =
       context.getSourceProperties() == null ? false : context.getSourceProperties().isRowIdSupported();
+    this.sourceEventOrdering = context.getSourceProperties() == null ? SourceProperties.Ordering.ORDERED :
+      context.getSourceProperties().getOrdering();
   }
 
   @Override
@@ -481,6 +485,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     fields.add(Schema.Field.of(Constants.SEQUENCE_NUM, Schema.of(Schema.Type.LONG)));
     fields.add(Schema.Field.of(Constants.IS_DELETED, Schema.nullableOf(Schema.of(Schema.Type.BOOLEAN))));
     fields.add(Schema.Field.of(Constants.ROW_ID, Schema.nullableOf(Schema.of(Schema.Type.STRING))));
+    fields.add(Schema.Field.of(Constants.SOURCE_TIMESTAMP, Schema.nullableOf(Schema.of(Schema.Type.LONG))));
     fields.addAll(original.getFields());
     return Schema.recordOf(original.getRecordName() + ".sequenced", fields);
   }
@@ -762,10 +767,10 @@ public class BigQueryEventConsumer implements EventConsumer {
      */
 
     String diffQuery = createDiffQuery(stagingTableId, primaryKeys, blob.getBatchId(),
-                                       latestMergedSequence.get(targetTableId), sourceRowIdSupported);
+                                       latestMergedSequence.get(targetTableId));
 
     String mergeQuery =
-      createMergeQuery(targetTableId, primaryKeys, blob.getTargetSchema(), diffQuery, sourceRowIdSupported);
+      createMergeQuery(targetTableId, primaryKeys, blob.getTargetSchema(), diffQuery);
 
     QueryJobConfiguration.Builder jobConfigBuilder = QueryJobConfiguration.newBuilder(mergeQuery);
     if (encryptionConfig != null) {
@@ -787,8 +792,8 @@ public class BigQueryEventConsumer implements EventConsumer {
     LOG.debug("Merged batch {} into {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
   }
 
-  static String createDiffQuery(TableId stagingTable, List<String> primaryKeys, long batchId,
-                                Long latestSequenceNumInTargetTable, boolean sourceRowIdSupported) {
+  private String createDiffQuery(TableId stagingTable, List<String> primaryKeys, long batchId,
+    Long latestSequenceNumInTargetTable) {
     String joinCondition;
     String whereClause;
     if (sourceRowIdSupported) {
@@ -843,8 +848,8 @@ public class BigQueryEventConsumer implements EventConsumer {
       "WHERE " + whereClause;
   }
 
-  static String createMergeQuery(TableId targetTableId, List<String> primaryKeys, Schema targetSchema,
-                                 String diffQuery, boolean sourceRowIdSupported) {
+  private String createMergeQuery(TableId targetTableId, List<String> primaryKeys, Schema targetSchema,
+    String diffQuery) {
     String mergeCondition;
     String deleteOperation;
 
@@ -896,8 +901,8 @@ public class BigQueryEventConsumer implements EventConsumer {
       deleteOperation = "  DELETE";
     }
 
-    // target table schema always contains nullable fields such as _is_deleted, _row_id.
-    // however for ORDERED source, these fields are not in the staging table, so filter out these fields before
+    // target table schema always contains nullable fields such as _is_deleted, _row_id and _source_timestamp.
+    // however these fields may not be in the staging table, so filter out these fields before
     // we perform INSERT/UPDATE queries based on the values from the staging table.
     final Predicate<Schema.Field> predicate = field -> {
       // filter out _is_deleted field for operations INSERT and UPDATE as it will be set when
@@ -905,25 +910,39 @@ public class BigQueryEventConsumer implements EventConsumer {
       if (field.getName().equals(Constants.IS_DELETED)) {
         return false;
       }
+
+      if (field.getName().equals(Constants.SOURCE_TIMESTAMP)) {
+        return sourceEventOrdering == SourceProperties.Ordering.UN_ORDERED;
+      }
+
       if (sourceRowIdSupported) {
         return true;
       }
-      // filter out the _row_id field for ORDERED source, as this field will not be present in the staging table.
+      // filter out the _row_id field for source that doesn't support row Id, as this field will not be present in the
+      // staging table.
       return !field.getName().equals(Constants.ROW_ID);
     };
+
+    // sequence number can decide whether it's a dup event
+    // if events are unordered , source timestamp can decide the ordering
+    // if an event happening earlier comes later , it's possible that some events happening later agains the same
+    // row has already been merged, so this late coming event should be ignored.
+    String updateAndDeleteCondition =
+      String.format("AND D.%s > T.%1$s ", Constants.SEQUENCE_NUM) + (sourceEventOrdering ==
+    SourceProperties.Ordering.ORDERED ? "" : String.format("AND D.%s >= T.%1$s ", Constants.SOURCE_TIMESTAMP));
 
     return "MERGE " +
       targetTableId.getDataset() + "." + targetTableId.getTable() + " as T\n" +
       "USING (" + diffQuery + ") as D\n" +
       "ON " + mergeCondition + "\n" +
-      "WHEN MATCHED AND D._op = \"DELETE\" THEN\n" +
+      "WHEN MATCHED AND D._op = \"DELETE\" " + updateAndDeleteCondition + "THEN\n" +
       deleteOperation + "\n" +
       // In a case when a replicator is paused for too long and crashed when resumed
       // user will create a new replicator against the same target
       // in this case the target already has some data
       // so the new repliator's snapshot will generate insert events that match some existing data in the
       // targe. That's why in the match case, we still need the insert opertion.
-      "WHEN MATCHED AND D._op IN (\"INSERT\", \"UPDATE\") AND D._sequence_num > T._sequence_num THEN\n" +
+      "WHEN MATCHED AND D._op IN (\"INSERT\", \"UPDATE\") " + updateAndDeleteCondition + "THEN\n" +
       "  UPDATE SET " +
       targetSchema.getFields().stream()
         .filter(predicate)
