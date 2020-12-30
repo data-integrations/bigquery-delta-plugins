@@ -581,30 +581,33 @@ public class BigQueryEventConsumer implements EventConsumer {
     String normalizedStagingTableName = normalize(stagingTablePrefix + blob.getTable());
     TableId stagingTableId = TableId.of(project, blob.getDataset(), normalizedStagingTableName);
 
-    runWithRetries(runContext -> loadStagingTable(stagingTableId, blob, runContext.getAttemptCount()),
-                   blob,
-                   String.format("Failed to load a batch of changes from GCS into staging table for %s.%s",
-                                 blob.getDataset(), blob.getTable()),
-                   "Exhausted retries while attempting to load changed to the staging table.");
-
-    runWithRetries(runContext -> mergeStagingTable(stagingTableId, blob, runContext.getAttemptCount()),
-                   blob,
-                   String.format("Failed to merge a batch of changes from the staging table into %s.%s",
-                                 blob.getDataset(), blob.getTable()),
-                   String.format("Exhausted retries while attempting to merge changes into target table %s.%s. "
-                                   + "Check that the service account has the right permissions "
-                                   + "and the table was not modified.", blob.getDataset(), blob.getTable()));
-
     try {
-      blob.getBlob().delete();
-    } catch (Exception e) {
-      // there is no retry for this cleanup error since it will not affect future functionality.
-      LOG.warn("Failed to delete temporary GCS object {} in bucket {}. The object will need to be manually deleted.",
-               blob.getBlob().getBlobId().getName(), blob.getBlob().getBlobId().getBucket(), e);
+      runWithRetries(runContext -> loadStagingTable(stagingTableId, blob, runContext.getAttemptCount()), blob,
+        String.format("Failed to load a batch of changes from GCS into staging table for %s.%s", blob.getDataset(), blob.getTable()),
+        "Exhausted retries while attempting to load changed to the staging table.");
+
+      runWithRetries(runContext -> mergeStagingTable(stagingTableId, blob, runContext.getAttemptCount()), blob,
+        String.format("Failed to merge a batch of changes from the staging table into %s.%s", blob.getDataset(), blob.getTable()),
+        String.format("Exhausted retries while attempting to merge changes into target table %s.%s. " +
+          "Check that the service account has the right permissions " + "and the table was not modified.", blob.getDataset(), blob.getTable()));
+    } finally {
+      try {
+        // clean up staging table after merging is done, there is no retry for this clean up since it will not affect
+        // future functionality
+        bigQuery.delete(stagingTableId);
+      } catch (Exception e) {
+        LOG.warn("Failed to delete staging table: {}.{}", blob.getDataset(), blob.getTable(), e);
+      } finally {
+        try {
+          // clean the GCS staging area
+          blob.getBlob().delete();
+        } catch (Exception e) {
+          // there is no retry for this cleanup error since it will not affect future functionality.
+          LOG.warn("Failed to delete temporary GCS object {} in bucket {}. The object will need to be manually deleted.",
+            blob.getBlob().getBlobId().getName(), blob.getBlob().getBlobId().getBucket(), e);
+        }
+      }
     }
-    // clean up staging table after merging is done, there is no retry for this clean up since it will not affect
-    // future functionality
-    bigQuery.delete(stagingTableId);
   }
 
   private void loadStagingTable(TableId stagingTableId, TableBlob blob, int attemptNumber)
@@ -612,23 +615,22 @@ public class BigQueryEventConsumer implements EventConsumer {
     LOG.debug("Loading batch {} of {} events into staging table for {}.{}",
               blob.getBatchId(), blob.getNumEvents(), blob.getDataset(), blob.getTable());
     Table stagingTable = bigQuery.getTable(stagingTableId);
-    if (stagingTable == null) {
-      List<String> primaryKeys = getPrimaryKeys(TableId.of(project, blob.getDataset(), blob.getTable()));
-      Clustering clustering = maxClusteringColumns <= 0 ? null : Clustering.newBuilder()
-        .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
-        .build();
-      TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
-        .setLocation(bucket.getLocation())
-        .setSchema(Schemas.convert(blob.getStagingSchema()))
-        .setClustering(clustering)
-        .build();
-      TableInfo.Builder builder = TableInfo.newBuilder(stagingTableId, tableDefinition);
-      if (encryptionConfig != null) {
-        builder.setEncryptionConfiguration(encryptionConfig);
-      }
-      TableInfo tableInfo = builder.build();
-      bigQuery.create(tableInfo);
+    if (stagingTable != null || stagingTable.exists()) {
+      //staging table should have been cleared
+      bigQuery.delete(stagingTable.getTableId());
     }
+    List<String> primaryKeys = getPrimaryKeys(TableId.of(project, blob.getDataset(), blob.getTable()));
+    Clustering clustering = maxClusteringColumns <= 0 ? null :
+      Clustering.newBuilder().setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
+        .build();
+    TableDefinition tableDefinition = StandardTableDefinition.newBuilder().setLocation(bucket.getLocation())
+      .setSchema(Schemas.convert(blob.getStagingSchema())).setClustering(clustering).build();
+    TableInfo.Builder builder = TableInfo.newBuilder(stagingTableId, tableDefinition);
+    if (encryptionConfig != null) {
+      builder.setEncryptionConfiguration(encryptionConfig);
+    }
+    TableInfo tableInfo = builder.build();
+    bigQuery.create(tableInfo);
 
     // load data from GCS object into staging BQ table
     // batch id is a timestamp generated at the time the first event was seen, so the job id is
