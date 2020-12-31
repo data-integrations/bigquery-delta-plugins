@@ -730,17 +730,17 @@ public class BigQueryEventConsumer implements EventConsumer {
      *    Because it's possible that an earlier happening update event comes late, we should ignore such event, if
      *    events happening later than this event has already been applied to target table.
      *
-     * * So the merge query would be :
+     *  So the merge query would be :
      *
-     * MERGE [target table] as T
-     * USING ($DIFF_QUERY) as D
-     * ON T.id = D._before_id
-     * WHEN MATCHED AND D._op = "DELETE" AND D._source_timestamp >= T._source_timestamp
-     *   UPDATE SET T._is_deleted = true
-     * WHEN MATCHED AND D._op IN ("INSERT", "UPDATE") AND D._source_timestamp >= T._source_timestamp
-     *   UPDATE id = D.id, name = D.name
-     * WHEN NOT MATCHED AND D._op IN ("INSERT", "UPDATE")
-     *   INSERT (_sequence_num, _is_deleted, _source_timestamp, id, name) VALUES (D._sequence_num, false, D
+     *  MERGE [target table] as T
+     *  USING ($DIFF_QUERY) as D
+     *  ON T.id = D._before_id
+     *  WHEN MATCHED AND D._op = "DELETE" AND D._source_timestamp >= T._source_timestamp
+     *    UPDATE SET T._is_deleted = true
+     *  WHEN MATCHED AND D._op IN ("INSERT", "UPDATE") AND D._source_timestamp >= T._source_timestamp
+     *    UPDATE id = D.id, name = D.name
+     *  WHEN NOT MATCHED AND D._op IN ("INSERT", "UPDATE")
+     *    INSERT (_sequence_num, _is_deleted, _source_timestamp, id, name) VALUES (D._sequence_num, false, D
      * ._source_timestamp, id, name)
      *
      * The purpose $DIFF_QUERY is same as case 1 but the form of it  would be:
