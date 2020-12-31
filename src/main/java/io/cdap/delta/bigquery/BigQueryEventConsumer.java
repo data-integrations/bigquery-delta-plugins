@@ -717,15 +717,20 @@ public class BigQueryEventConsumer implements EventConsumer {
      *
      * Case 2: Source generates events without row id and events are unordered.
      * The major differences between Case 1 and Case 2 are that:
-     * a. When merging a delete event, instead of deleting the row, we update the '_is_delete' column to true.
+     * a. For diff query, when join staging table with its self, join condition should contain:
+     *    A._source_timestamp < B._source_timestamp instead of A._sequence_num < B._sequence_num
+     *    to make sure events in A are joining with events happening later in B. Because for ordered events, sequence
+     *    num can decide the ordering while for unordered events, source timestamp can decide the ordering.
+     *
+     * b. When merging a delete event, instead of deleting the row, we update the '_is_delete' column to true.
      *    Because it's possible that an earlier happening update event comes late, if we delete the row, this late
      *    coming update event will insert a new row. second difference makes sure such event will be ignored.
-     * b. When merging delete and update event, we add an additional condition :
+     * c. When merging delete and update event, we add an additional condition :
      *    D._source_timestamp >= T._source_timestamp
      *    Because it's possible that an earlier happening update event comes late, we should ignore such event, if
      *    events happening later than this event has already been applied to target table.
      *
-     * So the merge query would be :
+     * * So the merge query would be :
      *
      * MERGE [target table] as T
      * USING ($DIFF_QUERY) as D
@@ -738,7 +743,13 @@ public class BigQueryEventConsumer implements EventConsumer {
      *   INSERT (_sequence_num, _is_deleted, _source_timestamp, id, name) VALUES (D._sequence_num, false, D
      * ._source_timestamp, id, name)
      *
-     * The purpose and form of $DIFF_QUERY are exactly same as case 2.
+     * The purpose $DIFF_QUERY is same as case 1 but the form of it  would be:
+     *   SELECT A.* FROM
+     *   (SELECT * FROM [staging table] WHERE _batch_id = 1234567890 AND _sequence_num > $LATEST_APPLIED) as A
+     *   LEFT OUTER JOIN
+     *   (SELECT * FROM [staging table] WHERE _batch_id = 1234567890 AND _sequence_num > $LATEST_APPLIED) as B
+     *   ON A.id = B._before_id AND A._source_timestamp < B._source_timestamp
+     *   WHERE B._before_id IS NULL
      *
      * Case 3: Source generates events with row id and events are ordered.
      *
@@ -791,10 +802,14 @@ public class BigQueryEventConsumer implements EventConsumer {
      *
      *  Case 4: Source generates events with row id and events are unordered.
      *  Similar as the differences between Case 1 & Case 2, the differences between Case 3 and Case 4 are that:
-     * a. When merging a delete event, instead of deleting the row, we update the '_is_delete' column to true.
+     *  a. For diff query, when join staging table with its self, join condition should contain:
+     *    A._source_timestamp < B._source_timestamp instead of A._sequence_num < B._sequence_num
+     *    to make sure events in A are joining with events happening later in B. Because for ordered events, sequence
+     *    num can decide the ordering while for unordered events, source timestamp can decide the ordering.
+     *  b. When merging a delete event, instead of deleting the row, we update the '_is_delete' column to true.
      *    Because it's possible that an earlier happening update event comes late, if we delete the row, this late
      *    coming update event will insert a new row. second difference makes sure such event will be ignored.
-     * b. When merging delete and update event, we add an additional condition :
+     *  c. When merging delete and update event, we add an additional condition :
      *    D._source_timestamp >= T._source_timestamp
      *    Because it's possible that an earlier happening update event comes late, we should ignore such event, if
      *    events happening later than this event has already been applied to target table.
@@ -812,12 +827,20 @@ public class BigQueryEventConsumer implements EventConsumer {
      *    INSERT (_sequence_num, _row_id, _source_timestamp, _is_deleted, id, name) VALUES
      *           (D._sequence_num, D._row_id, D._source_timestamp, false, D.id, D.name)
      *
-     * The purpose and form of $DIFF_QUERY are exactly same as case 3.
+     * The purpose $DIFF_QUERY is same as case 3 but the form of it  would be:
+     * SELECT A.* FROM
+     *      (SELECT * FROM [staging table]
+     *          WHERE batch_id = 1234567890 AND _sequence_num > $LATEST_APPLIED) as A
+     *      LEFT OUTER JOIN
+     *      (SELECT * FROM [staging table]
+     *          WHERE _batch_id = 1234567890 AND _sequence_num > $LATEST_APPLIED) as B
+     *      ON A._row_id = B._row_id AND A._source_timestamp < B._source_timestamp
+     * WHERE B._row_id IS NULL
      */
 
     String diffQuery =
       createDiffQuery(stagingTableId, primaryKeys, blob.getBatchId(), latestMergedSequence.get(targetTableId),
-        sourceRowIdSupported);
+        sourceRowIdSupported, sourceEventOrdering);
 
     String mergeQuery =
       createMergeQuery(targetTableId, primaryKeys, blob.getTargetSchema(), diffQuery, sourceRowIdSupported,
@@ -844,40 +867,42 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   static String createDiffQuery(TableId stagingTable, List<String> primaryKeys, long batchId,
-    Long latestSequenceNumInTargetTable, boolean sourceRowIdSupported) {
+    Long latestSequenceNumInTargetTable, boolean sourceRowIdSupported, SourceProperties.Ordering sourceEventsOrdering) {
     String joinCondition;
     String whereClause;
+    /*
+     * Diff Query will be of following form:
+     * SELECT A.* FROM
+     *   (SELECT * FROM [staging table] WHERE _batch_id = 1234567890 AND _sequence_num > $LATEST_APPLIED) as A
+     *   LEFT OUTER JOIN
+     *   (SELECT * FROM [staging table] WHERE _batch_id = 1234567890 AND _sequence_num > $LATEST_APPLIED) as B
+     *   ON ($JOIN_CONDITION)
+     *   WHERE ($WHERE_CLAUSE)
+     *
+     * Following are the differences between events with/without row id.
+     * 1. For event with row Id, we use the row Id to match the row, $JOIN_CONDITION will contain:
+     *     A._row_id = B._row_id
+     *    and $WHERE_CLAUSE will be
+     *     B._row_id IS NULL
+     * 2. For event without row Id, we use primary keys to match the row, $JOIN_CONDITION will be (assuming id is the
+     * PK):
+     *    A.id = B._before_id
+     *    and $WHERE_CLAUSE will be :
+     *    B._before_id IS NULL
+     *
+     * Following are the differences between ordered and un-ordered events:
+     * 1. For Ordered events, the $JOIN_CONDITION will contain :
+     *    A._sequence_num < B._sequence_num
+     *    Because events are ordered, this makes sure event in B happens later than event in A
+     * 2. For Un-Ordered events, the $JOIN_CONDITION will contain :
+     *    A._source_timestamp < B._source_timestamp
+     *    Because events are unordered, sequence number doesn't ensure the ordering but source timestamp can.
+     *    This makes sure event in B happens later than event in A
+     */
     if (sourceRowIdSupported) {
-      /*
-       * Query will be of the form:
-       *
-       * SELECT A.* FROM
-       *   (SELECT * FROM [staging table] WHERE _batch_id = 1234567890 AND _sequence_num > $LATEST_APPLIED) as A
-       *   LEFT OUTER JOIN
-       *   (SELECT * FROM [staging table] WHERE _batch_id = 1234567890 AND _sequence_num > $LATEST_APPLIED) as B
-       *   ON A._row_id = B._row_id AND A._sequence_num < B._sequence_num
-       *   WHERE B._row_id IS NULL
-       *
-       * Here we only construct the join condition and where clause as that is the only difference
-       * based on where source events support row id.
-       */
-
       joinCondition =  "A._row_id = B._row_id ";
       whereClause = " B._row_id IS NULL ";
     } else {
-      /*
-       * Query will be of the form:
-       *
-       * SELECT A.* FROM
-       *   (SELECT * FROM [staging table] WHERE _batch_id = 1234567890 AND _sequence_num > $LATEST_APPLIED) as A
-       *   LEFT OUTER JOIN
-       *   (SELECT * FROM [staging table] WHERE _batch_id = 1234567890 AND _sequence_num > $LATEST_APPLIED) as B
-       *   ON A.id = B._before_id AND A._sequence_num < B._sequence_num
-       *   WHERE B._before_id IS NULL
-       *
-       * Here we only construct the join condition and where clause as that is the only difference
-       * based on ordering of events.
-       */
       joinCondition = primaryKeys.stream()
         .map(name -> String.format("A.%s = B._before_%s", name, name))
         .collect(Collectors.joining(" AND "));
@@ -887,6 +912,12 @@ public class BigQueryEventConsumer implements EventConsumer {
         .collect(Collectors.joining(" AND "));
     }
 
+    if (sourceEventsOrdering == SourceProperties.Ordering.ORDERED) {
+      joinCondition += String.format(" AND A.%s < B.%1$s\n", Constants.SEQUENCE_NUM);
+
+    } else {
+      joinCondition += String.format(" AND A.%s < B.%1$s\n", Constants.SOURCE_TIMESTAMP);
+    }
     return "SELECT A.* FROM\n" +
       "(SELECT * FROM " + stagingTable.getDataset() + "." + stagingTable.getTable() +
       " WHERE _batch_id = " + batchId +
@@ -895,7 +926,7 @@ public class BigQueryEventConsumer implements EventConsumer {
       "(SELECT * FROM " + stagingTable.getDataset() + "." + stagingTable.getTable() +
       " WHERE _batch_id = " + batchId +
       " AND _sequence_num > " + latestSequenceNumInTargetTable + ") as B\n" +
-      "ON " + joinCondition + " AND A._sequence_num < B._sequence_num\n" +
+      "ON " + joinCondition +
       "WHERE " + whereClause;
   }
 
