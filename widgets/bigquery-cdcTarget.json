@@ -23,7 +23,10 @@
         {
           "name": "serviceAccountKey",
           "label": "Service Account Key",
-          "widget-type": "securekey-textarea"
+          "widget-type": "securekey-textarea",
+          "widget-attributes": {
+            "default": "auto-detect"
+          }
         }
       ]
     },
