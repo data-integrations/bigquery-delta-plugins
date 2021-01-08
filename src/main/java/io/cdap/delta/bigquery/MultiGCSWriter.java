@@ -120,6 +120,7 @@ public class MultiGCSWriter {
       try {
         writtenObjects.add(getWriteFuture(writeFuture));
       } catch (InterruptedException e) {
+        objects.clear();
         throw e;
       } catch (IOException e) {
         if (error == null) {
@@ -130,10 +131,10 @@ public class MultiGCSWriter {
       }
     }
 
+    objects.clear();
     if (error != null) {
       throw error;
     }
-    objects.clear();
     return writtenObjects;
   }
 
