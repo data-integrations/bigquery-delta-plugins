@@ -290,8 +290,11 @@ public class BigQueryEventConsumer implements EventConsumer {
       throw e;
     }
 
+
     latestOffset = event.getOffset();
     latestSequenceNum = sequencedEvent.getSequenceNumber();
+    LOG.info("Setting latest offset and seq num for DDL event : {} with seq num : {}", event.getOperation().getType()
+      , latestSequenceNum);
     if (normalizedTableName != null) {
       latestSeenSequence.put(TableId.of(project, normalizedDatabaseName, normalizedTableName),
                              sequencedEvent.getSequenceNumber());
@@ -489,6 +492,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     try {
       Failsafe.with(commitRetryPolicy).run(() -> {
         if (latestOffset != null) {
+          LOG.info("Committing offset : {} and seq num: {}" , latestOffset.get(), latestSequenceNum);
           context.commitOffset(latestOffset, latestSequenceNum);
         }
       });
@@ -535,6 +539,8 @@ public class BigQueryEventConsumer implements EventConsumer {
 
     latestOffset = event.getOffset();
     latestSequenceNum = sequenceNumber;
+    LOG.info("Setting latest offset and seq num for DML event : {} with seq num : {}", event.getRow().get("id"),
+      latestSequenceNum);
     context.incrementCount(event.getOperation());
 
     if (event.isSnapshot()) {
