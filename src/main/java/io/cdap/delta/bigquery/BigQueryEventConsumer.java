@@ -317,7 +317,7 @@ public class BigQueryEventConsumer implements EventConsumer {
 
     latestOffset = event.getOffset();
     latestSequenceNum = sequenceNumber;
-    LOG.debug("DDL offset: {} seq num: {}", latestOffset.get(), latestSequenceNum);
+    LOG.trace("DDL offset: {} seq num: {}", latestOffset.get(), latestSequenceNum);
     context.incrementCount(event.getOperation());
     if (event.isSnapshot()) {
       context.setTableSnapshotting(normalizedDatabaseName, normalizedTableName);
@@ -512,7 +512,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     try {
       Failsafe.with(commitRetryPolicy).run(() -> {
         if (latestOffset != null) {
-          LOG.debug("Committing offset : {} and seq num: {}" , latestOffset.get(), latestSequenceNum);
+          LOG.trace("Committing offset : {} and seq num: {}" , latestOffset.get(), latestSequenceNum);
           context.commitOffset(latestOffset, latestSequenceNum);
         }
       });
@@ -559,7 +559,7 @@ public class BigQueryEventConsumer implements EventConsumer {
 
     latestOffset = event.getOffset();
     latestSequenceNum = sequenceNumber;
-    LOG.debug("DML id:{} offset: {} seq num : {}", event.getRow().get("id"), latestOffset.get(), latestSequenceNum);
+    LOG.trace("DML id:{} offset: {} seq num : {}", event.getRow().get("id"), latestOffset.get(), latestSequenceNum);
     context.incrementCount(event.getOperation());
 
     if (event.isSnapshot()) {
@@ -646,7 +646,7 @@ public class BigQueryEventConsumer implements EventConsumer {
 
   private void loadStagingTable(TableId stagingTableId, TableBlob blob, int attemptNumber)
     throws InterruptedException, IOException, DeltaFailureException {
-    LOG.debug("Loading batch {} of {} events into staging table for {}.{}",
+    LOG.trace("Loading batch {} of {} events into staging table for {}.{}",
               blob.getBatchId(), blob.getNumEvents(), blob.getDataset(), blob.getTable());
     Table stagingTable = bigQuery.getTable(stagingTableId);
     if (stagingTable == null) {
@@ -688,12 +688,12 @@ public class BigQueryEventConsumer implements EventConsumer {
       .build();
     Job loadJob = bigQuery.create(jobInfo);
     loadJob.waitFor();
-    LOG.debug("Loaded batch {} into staging table for {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
+    LOG.trace("Loaded batch {} into staging table for {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
   }
 
   private void mergeStagingTable(TableId stagingTableId, TableBlob blob,
                                  int attemptNumber) throws InterruptedException, IOException, DeltaFailureException {
-    LOG.debug("Merging batch {} for {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
+    LOG.trace("Merging batch {} for {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
     TableId targetTableId = TableId.of(project, blob.getDataset(), blob.getTable());
     List<String> primaryKeys = getPrimaryKeys(targetTableId);
     /*
@@ -895,7 +895,7 @@ public class BigQueryEventConsumer implements EventConsumer {
       .build();
     Job mergeJob = bigQuery.create(jobInfo);
     mergeJob.waitFor();
-    LOG.debug("Merged batch {} into {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
+    LOG.trace("Merged batch {} into {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
   }
 
   static String createDiffQuery(TableId stagingTable, List<String> primaryKeys, long batchId,
@@ -1187,7 +1187,7 @@ public class BigQueryEventConsumer implements EventConsumer {
         }
 
         long answer = val.getLongValue();
-        LOG.debug("Loaded {} as the latest merged sequence number for {}.{}",
+        LOG.trace("Loaded {} as the latest merged sequence number for {}.{}",
                   answer, tableId.getDataset(), tableId.getTable());
         return answer;
       });
