@@ -317,6 +317,9 @@ public class BigQueryEventConsumer implements EventConsumer {
 
     latestOffset = event.getOffset();
     latestSequenceNum = sequenceNumber;
+    if (LOG.isTraceEnabled()) {
+      LOG.trace("DDL offset: {} seq num: {}", latestOffset.get(), latestSequenceNum);
+    }
     context.incrementCount(event.getOperation());
     if (event.isSnapshot()) {
       context.setTableSnapshotting(normalizedDatabaseName, normalizedTableName);
@@ -511,6 +514,9 @@ public class BigQueryEventConsumer implements EventConsumer {
     try {
       Failsafe.with(commitRetryPolicy).run(() -> {
         if (latestOffset != null) {
+          if (LOG.isTraceEnabled()) {
+            LOG.trace("Committing offset : {} and seq num: {}", latestOffset.get(), latestSequenceNum);
+          }
           context.commitOffset(latestOffset, latestSequenceNum);
         }
       });
@@ -557,6 +563,9 @@ public class BigQueryEventConsumer implements EventConsumer {
 
     latestOffset = event.getOffset();
     latestSequenceNum = sequenceNumber;
+    if (LOG.isTraceEnabled()) {
+      LOG.trace("DML event:{} offset: {} seq num : {}", GSON.toJson(event), latestOffset.get(), latestSequenceNum);
+    }
     context.incrementCount(event.getOperation());
 
     if (event.isSnapshot()) {
@@ -643,8 +652,10 @@ public class BigQueryEventConsumer implements EventConsumer {
 
   private void loadStagingTable(TableId stagingTableId, TableBlob blob, int attemptNumber)
     throws InterruptedException, IOException, DeltaFailureException {
-    LOG.debug("Loading batch {} of {} events into staging table for {}.{}",
-              blob.getBatchId(), blob.getNumEvents(), blob.getDataset(), blob.getTable());
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Loading batch {} of {} events into staging table for {}.{}", blob.getBatchId(), blob.getNumEvents(),
+        blob.getDataset(), blob.getTable());
+    }
     Table stagingTable = bigQuery.getTable(stagingTableId);
     if (stagingTable == null) {
       List<String> primaryKeys = getPrimaryKeys(TableId.of(project, blob.getDataset(), blob.getTable()));
@@ -685,12 +696,16 @@ public class BigQueryEventConsumer implements EventConsumer {
       .build();
     Job loadJob = bigQuery.create(jobInfo);
     loadJob.waitFor();
-    LOG.debug("Loaded batch {} into staging table for {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Loaded batch {} into staging table for {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
+    }
   }
 
   private void mergeStagingTable(TableId stagingTableId, TableBlob blob,
                                  int attemptNumber) throws InterruptedException, IOException, DeltaFailureException {
-    LOG.debug("Merging batch {} for {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Merging batch {} for {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
+    }
     TableId targetTableId = TableId.of(project, blob.getDataset(), blob.getTable());
     List<String> primaryKeys = getPrimaryKeys(targetTableId);
     /*
@@ -892,7 +907,9 @@ public class BigQueryEventConsumer implements EventConsumer {
       .build();
     Job mergeJob = bigQuery.create(jobInfo);
     mergeJob.waitFor();
-    LOG.debug("Merged batch {} into {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Merged batch {} into {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
+    }
   }
 
   static String createDiffQuery(TableId stagingTable, List<String> primaryKeys, long batchId,
@@ -977,6 +994,8 @@ public class BigQueryEventConsumer implements EventConsumer {
      * WHEN NOT MATCHED AND D._op IN ("INSERT", "UPDATE") THEN
      *   INSERT (id, name) VALUES (id, name)
      *
+     *
+     *
      * Following are the differences between events with/without row id.
      * 1. For event with row Id, we use the row Id to match the row, $MERGE_CONDITION will be:
      *    D._row_id = T._row_id
@@ -1000,6 +1019,14 @@ public class BigQueryEventConsumer implements EventConsumer {
      *    D._source_timestamp >= T._source_timestamp
      *    Because it's possible that an earlier happening update event comes late, we should ignore such event, if
      *    events happening later than this event has already been applied to target table.
+     * 5. For Un-ordered events, when a delete event is not matching any row in the target table (this could happen
+     *    when insert and delete to the same row are in the same batch and thus diff query will only get the delete
+     *    event in the result) , we should insert a row with _is_delete as true, because it's possible there is
+     *    another update event to the same row that will arrive late in next batch and if we don't have this row here
+     *    this late arriving update event will insert a new row. So for unordered events, we need below :
+     *
+     *    WHEN NOT MATCHED AND D._op IN ("DELETE") THEN
+     *    INSERT (id, name, _is_deleted) VALUES (id, name, true)
      */
 
     if (sourceRowIdSupported) {
@@ -1049,14 +1076,14 @@ public class BigQueryEventConsumer implements EventConsumer {
       updateAndDeleteCondition = "";
     } else {
       // for unordered events
-      deleteOperation = "  UPDATE SET _is_deleted = true ";
+      deleteOperation = "  UPDATE SET " + Constants.IS_DELETED + " = true ";
       // if events are unordered , source timestamp can decide the ordering
       // if an event happening earlier comes later , it's possible that some events happening later against the same
       // row has already been merged, so this late coming event should be ignored.
       updateAndDeleteCondition =  String.format("AND D.%s >= T.%1$s ", Constants.SOURCE_TIMESTAMP);
     }
 
-    return "MERGE " +
+    String mergeQuery = "MERGE " +
       targetTableId.getDataset() + "." + targetTableId.getTable() + " as T\n" +
       "USING (" + diffQuery + ") as D\n" +
       "ON " + mergeCondition + "\n" +
@@ -1085,6 +1112,22 @@ public class BigQueryEventConsumer implements EventConsumer {
         .filter(predicate)
         .map(Schema.Field::getName)
         .collect(Collectors.joining(", ")) + ")";
+
+    if (sourceEventOrdering == SourceProperties.Ordering.UN_ORDERED) {
+      mergeQuery += "\nWHEN NOT MATCHED AND D._op = \"DELETE\" THEN\n" +
+        "  INSERT (" +
+        targetSchema.getFields().stream()
+          .filter(predicate)
+          .map(Schema.Field::getName)
+          .collect(Collectors.joining(", ")) +
+        ", " + Constants.IS_DELETED + ") VALUES (" +
+        targetSchema.getFields().stream()
+          .filter(predicate)
+          .map(Schema.Field::getName)
+          .collect(Collectors.joining(", ")) + ", true)";
+    }
+    return mergeQuery;
+
   }
 
   private void runWithRetries(ContextualRunnable runnable, TableBlob blob, String onFailedAttemptMessage,
@@ -1158,8 +1201,10 @@ public class BigQueryEventConsumer implements EventConsumer {
         }
 
         long answer = val.getLongValue();
-        LOG.debug("Loaded {} as the latest merged sequence number for {}.{}",
-                  answer, tableId.getDataset(), tableId.getTable());
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("Loaded {} as the latest merged sequence number for {}.{}", answer, tableId.getDataset(),
+            tableId.getTable());
+        }
         return answer;
       });
     } catch (TimeoutExceededException e) {
