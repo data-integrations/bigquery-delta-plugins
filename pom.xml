@@ -22,7 +22,7 @@
 
   <groupId>io.cdap.delta</groupId>
   <artifactId>bigquery-delta-plugins</artifactId>
-  <version>0.2.0-SNAPSHOT</version>
+  <version>0.2.0</version>
   <name>BigQuery Delta plugins</name>
   <packaging>jar</packaging>
   <description>BigQuery Delta plugins</description>
@@ -56,8 +56,8 @@
   <properties>
     <avro.version>1.8.2</avro.version>
     <bigquery.version>1.78.0</bigquery.version>
-    <cdap.version>6.3.0-SNAPSHOT</cdap.version>
-    <delta.version>0.2.0-SNAPSHOT</delta.version>
+    <cdap.version>6.3.0</cdap.version>
+    <delta.version>0.2.0</delta.version>
     <failsafe.version>2.3.3</failsafe.version>
     <gcs.version>1.78.0</gcs.version>
     <logback.version>1.2.3</logback.version>
