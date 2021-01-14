@@ -20,6 +20,7 @@ import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.Storage;
+import com.google.gson.Gson;
 import io.cdap.cdap.api.data.format.StructuredRecord;
 import io.cdap.cdap.api.data.schema.Schema;
 import io.cdap.delta.api.DMLEvent;
@@ -52,6 +53,7 @@ import javax.annotation.Nullable;
  */
 public class MultiGCSWriter {
   private static final Logger LOG = LoggerFactory.getLogger(MultiGCSWriter.class);
+  private static final Gson GSON = new Gson();
   private final Storage storage;
   private final String bucket;
   private final String baseObjectName;
@@ -209,6 +211,9 @@ public class MultiGCSWriter {
       String objectName = String.format("%s%s/%s/%d", baseObjectName, dataset, table, batchId);
       blobId = BlobId.of(bucket, objectName);
       BlobInfo blobInfo = BlobInfo.newBuilder(blobId).build();
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Writing staging records to GCS file {}", objectName);
+      }
       outputStream = Channels.newOutputStream(storage.writer(blobInfo));
     }
 
@@ -226,7 +231,11 @@ public class MultiGCSWriter {
         avroWriter = new DataFileWriter<>(datumWriter).create(avroSchema, outputStream);
       }
 
-      avroWriter.append(createStagingRecord(sequencedEvent));
+      StructuredRecord stagingRecord = createStagingRecord(sequencedEvent);
+      if (LOG.isTraceEnabled()) {
+        LOG.error("Writing record {} to GCS.", GSON.toJson(stagingRecord));
+      }
+      avroWriter.append(stagingRecord);
       numEvents++;
     }
 

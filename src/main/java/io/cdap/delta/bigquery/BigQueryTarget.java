@@ -153,7 +153,9 @@ public class BigQueryTarget implements DeltaTarget {
     @Nullable
     @Description("Service account key to use when interacting with GCS and BigQuery. The service account "
       + "must have permission to write to GCS and BigQuery. When running on a Google Cloud VM, this can be set to "
-      + "'auto-detect', which will use the service account key on the VM.")
+      + "'auto-detect', which will use the service account key on the VM. On non Google Cloud VM, you need to have an" +
+      " environment variable 'GOOGLE_APPLICATION_CREDENTIALS' pointing to the service account key file to make " +
+      "'auto-detect' work by using that service account key file.")
     private String serviceAccountKey;
 
     @Nullable
@@ -205,7 +207,8 @@ public class BigQueryTarget implements DeltaTarget {
 
     private Credentials getCredentials() throws IOException {
       if (serviceAccountKey == null || "auto-detect".equalsIgnoreCase(serviceAccountKey)) {
-        return GoogleCredentials.getApplicationDefault();
+        return GoogleCredentials.getApplicationDefault()
+          .createScoped(Collections.singleton("https://www.googleapis.com/auth/cloud-platform"));
       }
 
       try (InputStream is = new ByteArrayInputStream(serviceAccountKey.getBytes(StandardCharsets.UTF_8))) {
