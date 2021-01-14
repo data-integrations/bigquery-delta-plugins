@@ -531,7 +531,6 @@ public class BigQueryEventConsumer implements EventConsumer {
     if (flushException != null) {
       throw flushException;
     }
-
     DMLEvent event = sequencedEvent.getEvent();
     String normalizedDatabaseName = normalize(event.getOperation().getDatabaseName());
     String normalizedTableName = normalize(event.getOperation().getTableName());
@@ -962,7 +961,8 @@ public class BigQueryEventConsumer implements EventConsumer {
       joinCondition += String.format(" AND A.%s < B.%1$s\n", Constants.SEQUENCE_NUM);
 
     } else {
-      joinCondition += String.format(" AND A.%s < B.%1$s\n", Constants.SOURCE_TIMESTAMP);
+      joinCondition += String.format(" AND (A.%s < B.%1$s OR A.%1$s = B.%1$s AND A.%s < B.%2$s)\n",
+        Constants.SOURCE_TIMESTAMP, Constants.SEQUENCE_NUM);
     }
     return "SELECT A.* FROM\n" +
       "(SELECT * FROM " + stagingTable.getDataset() + "." + stagingTable.getTable() +
@@ -1080,7 +1080,8 @@ public class BigQueryEventConsumer implements EventConsumer {
       // if events are unordered , source timestamp can decide the ordering
       // if an event happening earlier comes later , it's possible that some events happening later against the same
       // row has already been merged, so this late coming event should be ignored.
-      updateAndDeleteCondition =  String.format("AND D.%s >= T.%1$s ", Constants.SOURCE_TIMESTAMP);
+      updateAndDeleteCondition =  String.format("AND ( D.%s > T.%1$s OR D.%1$s = T.%1$s AND D.%s > T.%2$s)\n",
+        Constants.SOURCE_TIMESTAMP, Constants.SEQUENCE_NUM);
     }
 
     String mergeQuery = "MERGE " +
