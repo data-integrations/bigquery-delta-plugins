@@ -233,7 +233,7 @@ public class MultiGCSWriter {
 
       StructuredRecord stagingRecord = createStagingRecord(sequencedEvent);
       if (LOG.isTraceEnabled()) {
-        LOG.error("Writing record {} to GCS.", GSON.toJson(stagingRecord));
+        LOG.trace("Writing record {} to GCS.", GSON.toJson(stagingRecord));
       }
       avroWriter.append(stagingRecord);
       numEvents++;
