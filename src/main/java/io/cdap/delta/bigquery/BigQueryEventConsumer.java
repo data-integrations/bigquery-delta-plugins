@@ -1101,7 +1101,10 @@ public class BigQueryEventConsumer implements EventConsumer {
         .filter(predicate)
         .map(Schema.Field::getName)
         .map(name -> String.format("%s = D.%s", name, name))
-        .collect(Collectors.joining(", ")) + "\n" +
+        // explicitly set "_is_deleted" to null for the case when this row was previously deleted and the
+        // "_is_deleted" column was set to "true" and now a new insert is to insert the same row , we need to
+        // reset "_is_deleted" back to null.
+        .collect(Collectors.joining(", ")) +  ", " + Constants.IS_DELETED + " = null\n" +
       "WHEN NOT MATCHED AND D._op IN (\"INSERT\", \"UPDATE\") THEN\n" +
       "  INSERT (" +
       targetSchema.getFields().stream()
