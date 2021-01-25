@@ -1101,7 +1101,7 @@ public class BigQueryEventConsumer implements EventConsumer {
         .filter(predicate)
         .map(Schema.Field::getName)
         .map(name -> String.format("%s = D.%s", name, name))
-        .collect(Collectors.joining(", ")) + "\n" +
+        .collect(Collectors.joining(", ")) +  ", " + Constants.IS_DELETED + " = null\n" +
       "WHEN NOT MATCHED AND D._op IN (\"INSERT\", \"UPDATE\") THEN\n" +
       "  INSERT (" +
       targetSchema.getFields().stream()
