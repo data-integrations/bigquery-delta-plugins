@@ -34,6 +34,11 @@
       "label" : "Advanced",
       "properties" : [
         {
+          "name": "datasetName",
+          "label": "Dataset Name",
+          "widget-type": "textbox"
+        },
+        {
           "name": "stagingBucket",
           "label": "Staging Bucket",
           "widget-type": "textbox"

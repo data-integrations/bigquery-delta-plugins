@@ -113,7 +113,7 @@ public class BigQueryTarget implements DeltaTarget {
 
     return new BigQueryEventConsumer(context, storage, bigQuery, bucket, project,
                                      conf.getLoadIntervalSeconds(), conf.getStagingTablePrefix(),
-                                     conf.requiresManualDrops(), encryptionConfig, null);
+                                     conf.requiresManualDrops(), encryptionConfig, null, conf.getDatasetName());
   }
 
   @VisibleForTesting
@@ -186,6 +186,14 @@ public class BigQueryTarget implements DeltaTarget {
     @Description("Whether to require manual intervention when a drop table or drop database event is encountered.")
     private Boolean requireManualDrops;
 
+    @Nullable
+    @Description("Optional. By default the dataset name is same as source database name.")
+    private String datasetName;
+
+    @Nullable
+    public String getDatasetName() {
+      return datasetName;
+    }
     private String getStagingTablePrefix() {
       return stagingTablePrefix == null || stagingTablePrefix.isEmpty() ? "_staging_" : stagingTablePrefix;
     }
