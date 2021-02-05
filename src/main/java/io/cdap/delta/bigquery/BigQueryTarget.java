@@ -187,7 +187,10 @@ public class BigQueryTarget implements DeltaTarget {
     private Boolean requireManualDrops;
 
     @Nullable
-    @Description("Optional. By default the dataset name is same as source database name.")
+    @Description(
+      "Optional. By default the dataset name is same as source database name. A valid name should only contain " +
+        "letters, numbers, and underscores and maximum length can be 1024. Any invalid chars would be replaced with " +
+        "underscore in the final dataset name and any characters exceeds length limit will be truncated.")
     private String datasetName;
 
     @Nullable

@@ -194,12 +194,6 @@ public class BigQueryEventConsumer implements EventConsumer {
   // Without keeping the entire batch in memory, there would be no way to recover the records that failed to write
 
   BigQueryEventConsumer(DeltaTargetContext context, Storage storage, BigQuery bigQuery, Bucket bucket,
-    String project, int loadIntervalSeconds, String stagingTablePrefix, boolean requireManualDrops,
-    @Nullable EncryptionConfiguration encryptionConfig, @Nullable Long baseRetryDelay) {
-    this(context, storage, bigQuery, bucket, project, loadIntervalSeconds, stagingTablePrefix, requireManualDrops,
-      encryptionConfig, baseRetryDelay, null);
-  }
-  BigQueryEventConsumer(DeltaTargetContext context, Storage storage, BigQuery bigQuery, Bucket bucket,
                         String project, int loadIntervalSeconds, String stagingTablePrefix, boolean requireManualDrops,
                         @Nullable EncryptionConfiguration encryptionConfig, @Nullable Long baseRetryDelay,
                         @Nullable String datasetName) {
