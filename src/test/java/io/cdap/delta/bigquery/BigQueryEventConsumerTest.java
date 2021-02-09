@@ -140,9 +140,9 @@ public class BigQueryEventConsumerTest {
     Bucket bucket = storage.create(BucketInfo.of(bucketName));
     Map<String, String> runtimeArguments = new HashMap<>();
     runtimeArguments.put("gcp.bigquery.max.clustering.columns", "4");
-    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(new MockContext(300, runtimeArguments),
-                                                                    storage, bigQuery, bucket, project, 0,
-                                                                    STAGING_TABLE_PREFIX, true, null, 1L);
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(new MockContext(300, runtimeArguments), storage,
+                                                                    bigQuery, bucket, project, 0, STAGING_TABLE_PREFIX,
+                                                                    true, null, 1L, null);
     String dataset = "testTableCreationWithClustering";
     String tableName = "users";
     List<String> primaryKeys = new ArrayList<>();
@@ -184,9 +184,9 @@ public class BigQueryEventConsumerTest {
     String bucketName = "bqtest-" + UUID.randomUUID().toString();
     Bucket bucket = storage.create(BucketInfo.of(bucketName));
 
-    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(new MockContext(300, new HashMap()),
-                                                                    storage, bigQuery, bucket, project, 0,
-                                                                    STAGING_TABLE_PREFIX, true, null, 1L);
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(new MockContext(300, new HashMap()), storage,
+                                                                    bigQuery, bucket, project, 0, STAGING_TABLE_PREFIX,
+                                                                    true, null, 1L, null);
 
     String dataset = "testManualDropRetries";
     String tableName = "users";
@@ -229,7 +229,8 @@ public class BigQueryEventConsumerTest {
     Bucket bucket = storage.create(BucketInfo.of(bucketName));
 
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(MockContext.INSTANCE, storage, bigQuery, bucket,
-                                                                    project, 0, STAGING_TABLE_PREFIX, true, null, null);
+                                                                    project, 0, STAGING_TABLE_PREFIX, true, null, null,
+                                                                    null);
 
     String dataset = "testManualDrops";
     String tableName = "users";
@@ -299,7 +300,7 @@ public class BigQueryEventConsumerTest {
     Bucket bucket = storage.create(BucketInfo.of(bucketName));
 
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(MockContext.INSTANCE, storage, bigQuery, bucket,
-                                                                    project, 0, STAGING_TABLE_PREFIX, false, null,
+                                                                    project, 0, STAGING_TABLE_PREFIX, false, null, null,
                                                                     null);
 
     String dataset = "testAlter";
@@ -354,7 +355,7 @@ public class BigQueryEventConsumerTest {
     Bucket bucket = storage.create(BucketInfo.of(bucketName));
 
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(MockContext.INSTANCE, storage, bigQuery, bucket,
-                                                                    project, 0, STAGING_TABLE_PREFIX, false, null,
+                                                                    project, 0, STAGING_TABLE_PREFIX, false, null, null,
                                                                     null);
 
     String dataset = "testInsertUpdateDelete";
@@ -371,7 +372,7 @@ public class BigQueryEventConsumerTest {
     Bucket bucket = storage.create(BucketInfo.of(bucketName));
 
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(MockContext.INSTANCE, storage, bigQuery, bucket,
-                                                                    project, 0, STAGING_TABLE_PREFIX, false, null,
+                                                                    project, 0, STAGING_TABLE_PREFIX, false, null, null,
                                                                     null);
 
     String dataset = "testInsertTruncate";

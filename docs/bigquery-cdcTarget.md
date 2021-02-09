@@ -66,3 +66,9 @@ datasets when a drop table or drop database event is encountered. When set to tr
 not delete a table or dataset. Instead, it will fail and retry until the table or dataset does not exist.
 If the dataset or table does not already exist, no manual intervention is required. The event will be
 skipped as normal.
+
+**Dataset Name**: Name of the dataset to be created in the Bigquery. It's optional and by default the dataset
+name is same as source database name. A valid name should only contain letters, numbers, and underscores and
+maximum length can be 1024. Any invalid chars would be replaced with underscore in the final dataset name and
+any characters exceeds length limit will be truncated.
+
