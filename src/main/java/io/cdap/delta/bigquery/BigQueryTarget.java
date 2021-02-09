@@ -130,7 +130,7 @@ public class BigQueryTarget implements DeltaTarget {
 
   @Override
   public TableAssessor<StandardizedTableDetail> createTableAssessor(Configurer configurer) {
-    return new BigQueryAssessor(conf.stagingTablePrefix);
+    return new BigQueryAssessor(conf.stagingTablePrefix, conf.datasetName);
   }
 
   private static String stringifyPipelineId(DeltaPipelineId pipelineId) {

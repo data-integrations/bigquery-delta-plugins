@@ -889,10 +889,15 @@ public class BigQueryEventConsumer implements EventConsumer {
     String diffQuery =
       createDiffQuery(stagingTableId, primaryKeys, blob.getBatchId(), latestMergedSequence.get(targetTableId),
         sourceRowIdSupported, sourceEventOrdering);
-
+    if (LOG.isTraceEnabled()) {
+      LOG.trace("Diff query : {}", diffQuery);
+    }
     String mergeQuery =
       createMergeQuery(targetTableId, primaryKeys, blob.getTargetSchema(), diffQuery, sourceRowIdSupported,
         sourceEventOrdering);
+    if (LOG.isTraceEnabled()) {
+      LOG.trace("Merge query : {}", mergeQuery);
+    }
 
     QueryJobConfiguration.Builder jobConfigBuilder = QueryJobConfiguration.newBuilder(mergeQuery);
     if (encryptionConfig != null) {
