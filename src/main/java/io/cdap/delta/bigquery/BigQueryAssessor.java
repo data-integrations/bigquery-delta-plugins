@@ -25,6 +25,8 @@ import io.cdap.delta.api.assessment.Problem;
 import io.cdap.delta.api.assessment.StandardizedTableDetail;
 import io.cdap.delta.api.assessment.TableAssessment;
 import io.cdap.delta.api.assessment.TableAssessor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -37,13 +39,17 @@ import java.util.Objects;
  * Assesses table information.
  */
 public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> {
+  private static final Logger LOGGER = LoggerFactory.getLogger(BigQueryAssessor.class);
+
   private final String stagingTablePrefix;
   // tables already assessed so far, key is table name and value is schema name
   private final Map<String, String> tableToSchema;
+  private final String datasetName;
 
-  BigQueryAssessor(String stagingTablePrefix) {
+  BigQueryAssessor(String stagingTablePrefix, String datasetName) {
     this.stagingTablePrefix = stagingTablePrefix;
     this.tableToSchema  = new HashMap<>();
+    this.datasetName = datasetName;
   }
 
   @Override
@@ -55,7 +61,13 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
         columnAssessments.add(ColumnAssessment.builder(field.getName(), bqType)
                                 .setSourceColumn(field.getName())
                                 .build());
+        if (LOGGER.isDebugEnabled()) {
+          LOGGER.debug("Converting schema {} to {}", field.getSchema().isNullable() ?
+            field.getSchema().getNonNullable() : field.getSchema(), bqType);
+        }
       } catch (IllegalArgumentException e) {
+        LOGGER.warn("Failed to convert schema {} to any BQ type", field.getSchema().isNullable() ?
+            field.getSchema().getNonNullable() : field.getSchema());
         columnAssessments.add(ColumnAssessment.builder(field.getName(), "N/A")
                                 .setSourceColumn(field.getName())
                                 .setSupport(ColumnSupport.NO)
@@ -91,17 +103,19 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
                     "Not able to replicate this table to BigQuery"));
     }
 
-    String normalizedDBName = BigQueryEventConsumer.normalize(dbName);
+    String datasetName = this.datasetName == null ? dbName : this.datasetName;
+    String normalizedDatasetName = BigQueryEventConsumer.normalize(datasetName);
     String normalizedTableName = BigQueryEventConsumer.normalize(tableName);
     String normalizedStagingTableName = BigQueryEventConsumer.normalize(stagingTableName);
-    if (!dbName.equals(normalizedDBName)) {
+    if (!datasetName.equals(normalizedDatasetName)) {
       problems.add(
         new Problem("Normalizing Database Name",
-                    String.format("Database '%s' will be normalized to '%s' to meet BigQuery's dataset name " +
-                                    "requirements.", dbName, normalizedDBName),
-                    "Verify that multiple databases will not be normalized to the same BigQuery dataset name",
-                    "If multiple databases are normalized to the same name, conflicts can occur"));
+                    String.format("Dataset '%s' will be normalized to '%s' to meet BigQuery's dataset name " +
+                                    "requirements.", datasetName, normalizedDatasetName),
+                    "Verify that multiple dataset will not be normalized to the same BigQuery dataset name",
+                    "If multiple datasets are normalized to the same name, conflicts can occur"));
     }
+
     if (!tableName.equals(normalizedTableName) || !stagingTableName.equals(normalizedStagingTableName)) {
       problems.add(
         new Problem("Normalizing Table Name",

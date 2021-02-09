@@ -182,6 +182,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final int maxClusteringColumns;
   private final boolean sourceRowIdSupported;
   private final SourceProperties.Ordering sourceEventOrdering;
+  private final String datasetName;
   private ScheduledExecutorService scheduledExecutorService;
   private ScheduledFuture<?> scheduledFlush;
   private ExecutorService executorService;
@@ -194,7 +195,8 @@ public class BigQueryEventConsumer implements EventConsumer {
 
   BigQueryEventConsumer(DeltaTargetContext context, Storage storage, BigQuery bigQuery, Bucket bucket,
                         String project, int loadIntervalSeconds, String stagingTablePrefix, boolean requireManualDrops,
-                        @Nullable EncryptionConfiguration encryptionConfig, @Nullable Long baseRetryDelay) {
+                        @Nullable EncryptionConfiguration encryptionConfig, @Nullable Long baseRetryDelay,
+                        @Nullable String datasetName) {
     this.context = context;
     this.bigQuery = bigQuery;
     this.loadIntervalSeconds = loadIntervalSeconds;
@@ -233,6 +235,7 @@ public class BigQueryEventConsumer implements EventConsumer {
       context.getSourceProperties() == null ? false : context.getSourceProperties().isRowIdSupported();
     this.sourceEventOrdering = context.getSourceProperties() == null ? SourceProperties.Ordering.ORDERED :
       context.getSourceProperties().getOrdering();
+    this.datasetName = datasetName;
   }
 
   @Override
@@ -272,7 +275,8 @@ public class BigQueryEventConsumer implements EventConsumer {
 
     DDLEvent event = sequencedEvent.getEvent();
     DDLOperation ddlOperation = event.getOperation();
-    String normalizedDatabaseName = normalize(event.getOperation().getDatabaseName());
+    String normalizedDatabaseName =
+      datasetName == null ? normalize(event.getOperation().getDatabaseName()) : normalize(datasetName);
     String normalizedTableName = normalize(ddlOperation.getTableName());
     String normalizedStagingTableName = normalizedTableName == null ? null :
       normalize(stagingTablePrefix + normalizedTableName);
@@ -532,7 +536,8 @@ public class BigQueryEventConsumer implements EventConsumer {
       throw flushException;
     }
     DMLEvent event = sequencedEvent.getEvent();
-    String normalizedDatabaseName = normalize(event.getOperation().getDatabaseName());
+    String normalizedDatabaseName = datasetName == null ? normalize(event.getOperation().getDatabaseName()) :
+      normalize(datasetName);
     String normalizedTableName = normalize(event.getOperation().getTableName());
     DMLEvent normalizedDMLEvent = DMLEvent.builder(event)
       .setDatabaseName(normalizedDatabaseName)
@@ -884,10 +889,15 @@ public class BigQueryEventConsumer implements EventConsumer {
     String diffQuery =
       createDiffQuery(stagingTableId, primaryKeys, blob.getBatchId(), latestMergedSequence.get(targetTableId),
         sourceRowIdSupported, sourceEventOrdering);
-
+    if (LOG.isTraceEnabled()) {
+      LOG.trace("Diff query : {}", diffQuery);
+    }
     String mergeQuery =
       createMergeQuery(targetTableId, primaryKeys, blob.getTargetSchema(), diffQuery, sourceRowIdSupported,
         sourceEventOrdering);
+    if (LOG.isTraceEnabled()) {
+      LOG.trace("Merge query : {}", mergeQuery);
+    }
 
     QueryJobConfiguration.Builder jobConfigBuilder = QueryJobConfiguration.newBuilder(mergeQuery);
     if (encryptionConfig != null) {
