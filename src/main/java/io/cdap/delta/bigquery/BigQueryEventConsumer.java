@@ -164,6 +164,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private static final String VALID_NAME_REGEX = "[\\w]+";
   private static final String INVALID_NAME_REGEX = "[^\\w]+";
   private static final Gson GSON = new Gson();
+  private static final String RETAIN_STAGING_TABLE = "table.staging.retain";
 
   private final DeltaTargetContext context;
   private final BigQuery bigQuery;
@@ -183,6 +184,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final boolean sourceRowIdSupported;
   private final SourceProperties.Ordering sourceEventOrdering;
   private final String datasetName;
+  private final boolean retainStagingTable;
   private ScheduledExecutorService scheduledExecutorService;
   private ScheduledFuture<?> scheduledFlush;
   private ExecutorService executorService;
@@ -236,6 +238,8 @@ public class BigQueryEventConsumer implements EventConsumer {
     this.sourceEventOrdering = context.getSourceProperties() == null ? SourceProperties.Ordering.ORDERED :
       context.getSourceProperties().getOrdering();
     this.datasetName = datasetName;
+    this.retainStagingTable = Boolean.parseBoolean(context.getRuntimeArguments().getOrDefault(RETAIN_STAGING_TABLE,
+                                                                                              "false"));
   }
 
   @Override
@@ -651,7 +655,9 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
     // clean up staging table after merging is done, there is no retry for this clean up since it will not affect
     // future functionality
-    bigQuery.delete(stagingTableId);
+    if (!retainStagingTable) {
+      bigQuery.delete(stagingTableId);
+    }
   }
 
   private void loadStagingTable(TableId stagingTableId, TableBlob blob, int attemptNumber)
