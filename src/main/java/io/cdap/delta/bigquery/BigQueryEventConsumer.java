@@ -164,7 +164,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private static final String VALID_NAME_REGEX = "[\\w]+";
   private static final String INVALID_NAME_REGEX = "[^\\w]+";
   private static final Gson GSON = new Gson();
-  private static final String RETAIN_STAGING_TABLE = "table.staging.retain";
+  private static final String RETAIN_STAGING_TABLE = "retain.staging.table";
 
   private final DeltaTargetContext context;
   private final BigQuery bigQuery;
@@ -238,8 +238,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     this.sourceEventOrdering = context.getSourceProperties() == null ? SourceProperties.Ordering.ORDERED :
       context.getSourceProperties().getOrdering();
     this.datasetName = datasetName;
-    this.retainStagingTable = Boolean.parseBoolean(context.getRuntimeArguments().getOrDefault(RETAIN_STAGING_TABLE,
-                                                                                              "false"));
+    this.retainStagingTable = Boolean.parseBoolean(context.getRuntimeArguments().get(RETAIN_STAGING_TABLE));
   }
 
   @Override
