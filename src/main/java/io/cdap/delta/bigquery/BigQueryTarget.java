@@ -59,6 +59,7 @@ public class BigQueryTarget implements DeltaTarget {
   public static final String NAME = "bigquery";
   public static final String STAGING_BUCKET_PREFIX = "df-rbq";
   private static final String GCS_SCHEME = "gs://";
+  private static final String GCP_CMEK_KEY_NAME = "gcp.cmek.key.name";
   private final Conf conf;
 
   @SuppressWarnings("unused")
@@ -75,7 +76,9 @@ public class BigQueryTarget implements DeltaTarget {
   public EventConsumer createConsumer(DeltaTargetContext context) throws IOException {
     Credentials credentials = conf.getCredentials();
     String project = conf.getProject();
-    String cmekKey = context.getRuntimeArguments().get("gcp.cmek.key.name");
+    String cmekKey = context.getRuntimeArguments().get(GCP_CMEK_KEY_NAME) != null ?
+      context.getRuntimeArguments().get(GCP_CMEK_KEY_NAME) : conf.getEncryptionKeyName();
+
     EncryptionConfiguration encryptionConfig = cmekKey == null ? null :
       EncryptionConfiguration.newBuilder().setKmsKeyName(cmekKey).build();
 
@@ -194,9 +197,20 @@ public class BigQueryTarget implements DeltaTarget {
     private String datasetName;
 
     @Nullable
+    @Description(
+      "Optional. GCP Customer-managed encryption key (CMEK) used to encrypt the resources created by this target.")
+    private String encryptionKeyName;
+
+    @Nullable
     public String getDatasetName() {
       return datasetName;
     }
+
+    @Nullable
+    public String getEncryptionKeyName() {
+      return encryptionKeyName;
+    }
+
     private String getStagingTablePrefix() {
       return stagingTablePrefix == null || stagingTablePrefix.isEmpty() ? "_staging_" : stagingTablePrefix;
     }

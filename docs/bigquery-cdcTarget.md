@@ -72,3 +72,6 @@ name is same as source database name. A valid name should only contain letters, 
 maximum length can be 1024. Any invalid chars would be replaced with underscore in the final dataset name and
 any characters exceeds length limit will be truncated.
 
+**Encryption Key Name**: GCP Customer-managed encryption key (CMEK) used to encrypt the resources created by this target. 
+Encryption key name should be of the form "projects/<gcp-project-id>/locations/<key-location>/keyRings/<key-ring-name>/cryptoKeys/<key-name>".
+
