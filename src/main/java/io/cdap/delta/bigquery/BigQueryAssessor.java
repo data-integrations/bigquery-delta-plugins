@@ -104,9 +104,9 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
     }
 
     String datasetName = this.datasetName == null ? dbName : this.datasetName;
-    String normalizedDatasetName = BigQueryEventConsumer.normalize(datasetName);
-    String normalizedTableName = BigQueryEventConsumer.normalize(tableName);
-    String normalizedStagingTableName = BigQueryEventConsumer.normalize(stagingTableName);
+    String normalizedDatasetName = BigQueryUtils.normalize(datasetName);
+    String normalizedTableName = BigQueryUtils.normalize(tableName);
+    String normalizedStagingTableName = BigQueryUtils.normalize(stagingTableName);
     if (!datasetName.equals(normalizedDatasetName)) {
       problems.add(
         new Problem("Normalizing Database Name",
