@@ -21,8 +21,6 @@ import com.google.cloud.bigquery.Clustering;
 import com.google.cloud.bigquery.DatasetId;
 import com.google.cloud.bigquery.DatasetInfo;
 import com.google.cloud.bigquery.EncryptionConfiguration;
-import com.google.cloud.bigquery.FieldValue;
-import com.google.cloud.bigquery.FieldValueList;
 import com.google.cloud.bigquery.FormatOptions;
 import com.google.cloud.bigquery.Job;
 import com.google.cloud.bigquery.JobId;
@@ -34,7 +32,6 @@ import com.google.cloud.bigquery.Table;
 import com.google.cloud.bigquery.TableDefinition;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
-import com.google.cloud.bigquery.TableResult;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.Bucket;
 import com.google.cloud.storage.Storage;
@@ -67,10 +64,8 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -158,11 +153,6 @@ import javax.annotation.Nullable;
  */
 public class BigQueryEventConsumer implements EventConsumer {
   private static final Logger LOG = LoggerFactory.getLogger(BigQueryEventConsumer.class);
-  private static final int MAX_LENGTH = 1024;
-  // according to big query dataset and table naming convention, valid name should only contain letters (upper or
-  // lower case), numbers, and underscores
-  private static final String VALID_NAME_REGEX = "[\\w]+";
-  private static final String INVALID_NAME_REGEX = "[^\\w]+";
   private static final Gson GSON = new Gson();
   private static final String RETAIN_STAGING_TABLE = "retain.staging.table";
 
@@ -278,11 +268,12 @@ public class BigQueryEventConsumer implements EventConsumer {
 
     DDLEvent event = sequencedEvent.getEvent();
     DDLOperation ddlOperation = event.getOperation();
-    String normalizedDatabaseName =
-      datasetName == null ? normalize(event.getOperation().getDatabaseName()) : normalize(datasetName);
-    String normalizedTableName = normalize(ddlOperation.getTableName());
+    String normalizedDatabaseName = datasetName == null ?
+      BigQueryUtils.normalize(event.getOperation().getDatabaseName()) :
+      BigQueryUtils.normalize(datasetName);
+    String normalizedTableName = BigQueryUtils.normalize(ddlOperation.getTableName());
     String normalizedStagingTableName = normalizedTableName == null ? null :
-      normalize(stagingTablePrefix + normalizedTableName);
+      BigQueryUtils.normalize(stagingTablePrefix + normalizedTableName);
 
     try {
       Failsafe.with(createBaseRetryPolicy(baseRetryDelay)).run(() -> {
@@ -539,9 +530,10 @@ public class BigQueryEventConsumer implements EventConsumer {
       throw flushException;
     }
     DMLEvent event = sequencedEvent.getEvent();
-    String normalizedDatabaseName = datasetName == null ? normalize(event.getOperation().getDatabaseName()) :
-      normalize(datasetName);
-    String normalizedTableName = normalize(event.getOperation().getTableName());
+    String normalizedDatabaseName = datasetName == null ?
+      BigQueryUtils.normalize(event.getOperation().getDatabaseName()) :
+      BigQueryUtils.normalize(datasetName);
+    String normalizedTableName = BigQueryUtils.normalize(event.getOperation().getTableName());
     DMLEvent normalizedDMLEvent = DMLEvent.builder(event)
       .setDatabaseName(normalizedDatabaseName)
       .setTableName(normalizedTableName)
@@ -628,7 +620,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   private void mergeTableChanges(TableBlob blob) throws DeltaFailureException, InterruptedException {
-    String normalizedStagingTableName = normalize(stagingTablePrefix + blob.getTable());
+    String normalizedStagingTableName = BigQueryUtils.normalize(stagingTablePrefix + blob.getTable());
     TableId stagingTableId = TableId.of(project, blob.getDataset(), normalizedStagingTableName);
 
     runWithRetries(runContext -> loadStagingTable(stagingTableId, blob, runContext.getAttemptCount()),
@@ -1194,32 +1186,7 @@ public class BigQueryEventConsumer implements EventConsumer {
 
     try {
       return Failsafe.with(retryPolicy).get(() -> {
-        if (bigQuery.getTable(tableId) == null) {
-          return 0L;
-        }
-
-        String query = String.format("SELECT MAX(_sequence_num) FROM %s.%s", tableId.getDataset(), tableId.getTable());
-        QueryJobConfiguration.Builder jobConfigBuilder = QueryJobConfiguration.newBuilder(query);
-        if (encryptionConfig != null) {
-          jobConfigBuilder.setDestinationEncryptionConfiguration(encryptionConfig);
-        }
-        QueryJobConfiguration jobConfig = jobConfigBuilder.build();
-        JobId jobId = JobId.of(UUID.randomUUID().toString());
-        Job queryJob = bigQuery.create(JobInfo.newBuilder(jobConfig).setJobId(jobId).build());
-        queryJob.waitFor();
-        TableResult result = queryJob.getQueryResults();
-        Iterator<FieldValueList> resultIter = result.iterateAll().iterator();
-        if (!resultIter.hasNext()) {
-          return 0L;
-        }
-        // query is SELECT MAX(_sequence_num) FROM ...
-        // so there is at most one row and one column in the output.
-        FieldValue val = resultIter.next().get(0);
-        if (val.getValue() == null) {
-          return 0L;
-        }
-
-        long answer = val.getLongValue();
+        long answer = BigQueryUtils.getMaximumSequenceNumberForTable(bigQuery, tableId, encryptionConfig);
         if (LOG.isDebugEnabled()) {
           LOG.debug("Loaded {} as the latest merged sequence number for {}.{}", answer, tableId.getDataset(),
             tableId.getTable());
@@ -1235,24 +1202,6 @@ public class BigQueryEventConsumer implements EventConsumer {
       }
       throw e;
     }
-  }
-
-  public static String normalize(String name) {
-    if (name == null) {
-      // avoid potential NPE
-      return null;
-    }
-
-    // replace invalid chars with underscores if there are any
-    if (!name.matches(VALID_NAME_REGEX)) {
-      name = name.replaceAll(INVALID_NAME_REGEX, "_");
-    }
-
-    // truncate the name if it exceeds the max length
-    if (name.length() > MAX_LENGTH) {
-      name = name.substring(0, MAX_LENGTH);
-    }
-    return name;
   }
 
   /**

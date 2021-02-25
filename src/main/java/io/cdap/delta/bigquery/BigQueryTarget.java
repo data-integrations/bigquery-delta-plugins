@@ -41,6 +41,8 @@ import io.cdap.delta.api.DeltaTargetContext;
 import io.cdap.delta.api.EventConsumer;
 import io.cdap.delta.api.assessment.StandardizedTableDetail;
 import io.cdap.delta.api.assessment.TableAssessor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -56,6 +58,7 @@ import javax.annotation.Nullable;
 @Name(BigQueryTarget.NAME)
 @Plugin(type = DeltaTarget.PLUGIN_TYPE)
 public class BigQueryTarget implements DeltaTarget {
+  private static final Logger LOG = LoggerFactory.getLogger(BigQueryTarget.class);
   public static final String NAME = "bigquery";
   public static final String STAGING_BUCKET_PREFIX = "df-rbq";
   private static final String GCS_SCHEME = "gs://";
@@ -70,6 +73,31 @@ public class BigQueryTarget implements DeltaTarget {
   @Override
   public void configure(Configurer configurer) {
     // no-op
+  }
+
+  @Override
+  public void initialize(DeltaTargetContext context) throws Exception {
+    Credentials credentials = conf.getCredentials();
+    String project = conf.getProject();
+    String cmekKey = context.getRuntimeArguments().get(GCP_CMEK_KEY_NAME) != null ?
+      context.getRuntimeArguments().get(GCP_CMEK_KEY_NAME) : conf.getEncryptionKeyName();
+
+    EncryptionConfiguration encryptionConfig = cmekKey == null ? null :
+      EncryptionConfiguration.newBuilder().setKmsKeyName(cmekKey).build();
+
+    BigQuery bigQuery = BigQueryOptions.newBuilder()
+      .setCredentials(credentials)
+      .setProjectId(project)
+      .build()
+      .getService();
+
+    long maximumExistingSequenceNumber = BigQueryUtils.getMaximumExistingSequenceNumber(context.getAllTables(), project,
+                                                                                        conf.getDatasetName(), bigQuery,
+                                                                                        encryptionConfig);
+
+    LOG.info("Found maximum sequence number {}", maximumExistingSequenceNumber);
+
+    context.initializeSequenceNumber(maximumExistingSequenceNumber);
   }
 
   @Override
