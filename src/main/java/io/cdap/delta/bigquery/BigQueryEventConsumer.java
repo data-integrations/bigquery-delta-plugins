@@ -275,22 +275,14 @@ public class BigQueryEventConsumer implements EventConsumer {
     String normalizedStagingTableName = normalizedTableName == null ? null :
       BigQueryUtils.normalize(stagingTablePrefix + normalizedTableName);
 
-    try {
-      Failsafe.with(createBaseRetryPolicy(baseRetryDelay)).run(() -> {
-        handleDDL(event, normalizedDatabaseName, normalizedTableName, normalizedStagingTableName);
-      });
-    } catch (TimeoutExceededException e) {
-      throw new DeltaFailureException(
-        String.format("Exhausted retries trying to apply '%s' DDL event", event.getOperation()), e);
-    } catch (FailsafeException e) {
-      if (e.getCause() instanceof InterruptedException) {
-        throw (InterruptedException) e.getCause();
-      }
-      if (e.getCause() instanceof DeltaFailureException) {
-        throw (DeltaFailureException) e.getCause();
-      }
-      throw e;
-    }
+    runWithRetries(ctx -> handleDDL(event, normalizedDatabaseName, normalizedTableName, normalizedStagingTableName),
+                   baseRetryDelay,
+                   normalizedDatabaseName,
+                   event.getOperation().getSchemaName(),
+                   normalizedTableName,
+                   String.format("Failed to apply '%s' DDL event", event.getOperation()),
+                   String.format("Exhausted retries trying to apply '%s' DDL event", event.getOperation())
+                   );
 
     long sequenceNumber = sequencedEvent.getSequenceNumber();
     if (normalizedTableName != null) {
@@ -622,15 +614,21 @@ public class BigQueryEventConsumer implements EventConsumer {
   private void mergeTableChanges(TableBlob blob) throws DeltaFailureException, InterruptedException {
     String normalizedStagingTableName = BigQueryUtils.normalize(stagingTablePrefix + blob.getTable());
     TableId stagingTableId = TableId.of(project, blob.getDataset(), normalizedStagingTableName);
-
+    long retryDelay = Math.min(91, context.getMaxRetrySeconds()) - 1;
     runWithRetries(runContext -> loadStagingTable(stagingTableId, blob, runContext.getAttemptCount()),
-                   blob,
+                   retryDelay,
+                   blob.getDataset(),
+                   blob.getSourceDbSchemaName(),
+                   blob.getTable(),
                    String.format("Failed to load a batch of changes from GCS into staging table for %s.%s",
                                  blob.getDataset(), blob.getTable()),
                    "Exhausted retries while attempting to load changed to the staging table.");
 
     runWithRetries(runContext -> mergeStagingTable(stagingTableId, blob, runContext.getAttemptCount()),
-                   blob,
+                   retryDelay,
+                   blob.getDataset(),
+                   blob.getSourceDbSchemaName(),
+                   blob.getTable(),
                    String.format("Failed to merge a batch of changes from the staging table into %s.%s",
                                  blob.getDataset(), blob.getTable()),
                    String.format("Exhausted retries while attempting to merge changes into target table %s.%s. "
@@ -1141,21 +1139,19 @@ public class BigQueryEventConsumer implements EventConsumer {
 
   }
 
-  private void runWithRetries(ContextualRunnable runnable, TableBlob blob, String onFailedAttemptMessage,
-                              String retriesExhaustedMessage) throws DeltaFailureException, InterruptedException {
-    long baseDelay = Math.min(91, context.getMaxRetrySeconds()) - 1;
-    RetryPolicy<Object> retryPolicy = createBaseRetryPolicy(baseDelay)
+  private void runWithRetries(ContextualRunnable runnable, long retryDelay, String dataset, String schema, String table,
+    String onFailedAttemptMessage, String retriesExhaustedMessage) throws DeltaFailureException, InterruptedException {
+    RetryPolicy<Object> retryPolicy = createBaseRetryPolicy(retryDelay)
       .onFailedAttempt(failureContext -> {
         Throwable t = failureContext.getLastFailure();
         LOG.error(onFailedAttemptMessage, t);
         // its ok to set table state every retry, because this is a no-op if there is no change to the state.
         try {
-          context.setTableError(blob.getDataset(), blob.getSourceDbSchemaName(), blob.getTable(),
-                                new ReplicationError(t));
+          context.setTableError(dataset, schema, table, new ReplicationError(t));
         } catch (IOException e) {
           // setting table state is not a fatal error, log a warning and continue on
-          LOG.warn("Unable to set error state for table {}.{}. Replication state for the table may be incorrect.",
-                   blob.getDataset(), blob.getTable());
+          LOG.warn("Unable to set error state for table {}.{}.{} Replication state for the table may be incorrect.",
+                   dataset, schema, table);
         }
       });
 
