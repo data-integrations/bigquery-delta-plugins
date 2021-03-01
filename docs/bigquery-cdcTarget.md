@@ -40,6 +40,11 @@ Properties
 **Project ID**: Project of the BigQuery dataset. When running on a Dataproc cluster, this can be left blank,
 which will use the project of the cluster.
 
+**Location**: The location where the BigQuery dataset and GCS staging bucket will get created. For example, 'us-east1' 
+for regional bucket, 'us' for multi-regional bucket. A complete list of available locations can be found at 
+https://cloud.google.com/bigquery/docs/locations. This value is ignored if an existing GCS bucket is specified, as the
+staging bucket and the BigQuery dataset will be created in the same location as that bucket.   
+
 **Staging Bucket**: GCS bucket to write change events to before loading them into staging tables.
 Changes are written to a directory that contains the replicator name and namespace. It is safe to use
 the same bucket across multiple replicators within the same instance. If it is shared by replicators across
@@ -47,10 +52,6 @@ multiple instances, ensure that the namespace and name are unique, otherwise the
 The bucket must be in the same location as the BigQuery dataset. If not provided, new bucket will be created for 
 each pipeline named as 'df-rbq-<namespace-name>-<pipeline-name>-<deployment-timestamp>'. Note that user 
 will have to explicitly delete the bucket once the pipeline is deleted.  
-
-**Staging Bucket Location**: The location where the staging gcs bucket will get created. For example, 'us-east1' 
-for regional bucket, 'us' for multi-regional bucket. Complete list of available GCS locations can be found here 
-https://cloud.google.com/storage/docs/locations. This value is ignored if the bucket already exists.   
 
 **Service Account Key**: The contents of the service account key to use when interacting with GCS and
 BigQuery. When running on a Dataproc cluster, this can be left blank, which will use the service account
@@ -67,7 +68,7 @@ not delete a table or dataset. Instead, it will fail and retry until the table o
 If the dataset or table does not already exist, no manual intervention is required. The event will be
 skipped as normal.
 
-**Dataset Name**: Name of the dataset to be created in the Bigquery. It's optional and by default the dataset
+**Dataset Name**: Name of the dataset to be created in the BigQuery. It's optional and by default the dataset
 name is same as source database name. A valid name should only contain letters, numbers, and underscores and
 maximum length can be 1024. Any invalid chars would be replaced with underscore in the final dataset name and
 any characters exceeds length limit will be truncated.

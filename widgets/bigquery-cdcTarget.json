@@ -47,17 +47,17 @@
           }
         },
         {
-          "name": "stagingBucket",
-          "label": "Staging Bucket",
-          "widget-type": "textbox"
-        },
-        {
           "name": "stagingBucketLocation",
-          "label": "Staging Bucket Location",
+          "label": "Location",
           "widget-type": "textbox",
           "widget-attributes": {
             "default": "us"
           }
+        },
+        {
+          "name": "stagingBucket",
+          "label": "Staging Bucket",
+          "widget-type": "textbox"
         },
         {
           "name": "loadInterval",

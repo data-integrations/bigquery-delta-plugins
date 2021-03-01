@@ -200,8 +200,9 @@ public class BigQueryTarget implements DeltaTarget {
     private String stagingBucket;
 
     @Nullable
-    @Description("The location where the staging gcs bucket will get created. "
-      + "This value is ignored if the bucket already exists.")
+    @Description("The location where the BigQuery dataset and GCS staging bucket will be created. BigQuery dataset " +
+      "and GCS Staging Bucket must be in the same location. This value is ignored if an existing GCS bucket is " +
+      "specified, as the staging bucket and the BigQuery dataset will be created in the same location as that bucket")
     protected String stagingBucketLocation;
 
     @Nullable
