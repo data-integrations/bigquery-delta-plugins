@@ -47,7 +47,7 @@
           }
         },
         {
-          "name": "location",
+          "name": "stagingBucketLocation",
           "label": "Location",
           "widget-type": "textbox",
           "widget-attributes": {
