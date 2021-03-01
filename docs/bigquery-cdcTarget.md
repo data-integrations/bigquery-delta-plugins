@@ -42,8 +42,8 @@ which will use the project of the cluster.
 
 **Location**: The location where the BigQuery dataset and GCS staging bucket will get created. For example, 'us-east1' 
 for regional bucket, 'us' for multi-regional bucket. A complete list of available locations can be found at 
-https://cloud.google.com/bigquery/docs/locations. This value is ignored if an existing GCS bucket is specified, as staging
-bucket and the BigQuery dataset will be created in the same location as that bucket.   
+https://cloud.google.com/bigquery/docs/locations. This value is ignored if an existing GCS bucket is specified, as the
+staging bucket and the BigQuery dataset will be created in the same location as that bucket.   
 
 **Staging Bucket**: GCS bucket to write change events to before loading them into staging tables.
 Changes are written to a directory that contains the replicator name and namespace. It is safe to use
