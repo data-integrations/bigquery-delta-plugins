@@ -130,8 +130,8 @@ public class BigQueryTarget implements DeltaTarget {
         if (cmekKey != null) {
           builder.setDefaultKmsKeyName(cmekKey);
         }
-        if (conf.stagingBucketLocation != null && !conf.stagingBucketLocation.trim().isEmpty()) {
-          builder.setLocation(conf.stagingBucketLocation);
+        if (conf.location != null && !conf.location.trim().isEmpty()) {
+          builder.setLocation(conf.location);
         }
         bucket = storage.create(builder.build());
       } catch (StorageException e) {
@@ -200,9 +200,10 @@ public class BigQueryTarget implements DeltaTarget {
     private String stagingBucket;
 
     @Nullable
-    @Description("The location where the staging gcs bucket will get created. "
-      + "This value is ignored if the bucket already exists.")
-    protected String stagingBucketLocation;
+    @Description("The location where the Bigquery dataset and GCS staging bucket will be created. Bigquery dataset " +
+      "and GCS Staging Bucket must be in the same location. This value is ignored if an existing GCS bucket is " +
+      "specified as staging bucket and the Bigquery dataset will be created in the same location as that bucket")
+    protected String location;
 
     @Nullable
     @Description("Changes are first written to a staging table before being merged to the final table. "

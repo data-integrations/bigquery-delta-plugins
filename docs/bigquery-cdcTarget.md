@@ -40,6 +40,11 @@ Properties
 **Project ID**: Project of the BigQuery dataset. When running on a Dataproc cluster, this can be left blank,
 which will use the project of the cluster.
 
+**Location**: The location where the BigQuery dataset and GCS staging gcs bucket will get created. For example, 'us-east1' 
+for regional bucket, 'us' for multi-regional bucket. Complete list of available GCS locations can be found here 
+https://cloud.google.com/bigquery/docs/locations. This value is ignored if an existing GCS bucket is specified as staging
+bucket and the Bigquery dataset will be created in the same location as that bucket   
+
 **Staging Bucket**: GCS bucket to write change events to before loading them into staging tables.
 Changes are written to a directory that contains the replicator name and namespace. It is safe to use
 the same bucket across multiple replicators within the same instance. If it is shared by replicators across
@@ -47,10 +52,6 @@ multiple instances, ensure that the namespace and name are unique, otherwise the
 The bucket must be in the same location as the BigQuery dataset. If not provided, new bucket will be created for 
 each pipeline named as 'df-rbq-<namespace-name>-<pipeline-name>-<deployment-timestamp>'. Note that user 
 will have to explicitly delete the bucket once the pipeline is deleted.  
-
-**Staging Bucket Location**: The location where the staging gcs bucket will get created. For example, 'us-east1' 
-for regional bucket, 'us' for multi-regional bucket. Complete list of available GCS locations can be found here 
-https://cloud.google.com/storage/docs/locations. This value is ignored if the bucket already exists.   
 
 **Service Account Key**: The contents of the service account key to use when interacting with GCS and
 BigQuery. When running on a Dataproc cluster, this can be left blank, which will use the service account
