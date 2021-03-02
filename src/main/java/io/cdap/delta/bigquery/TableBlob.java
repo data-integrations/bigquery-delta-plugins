@@ -33,9 +33,10 @@ public class TableBlob {
   private final long batchId;
   private final long numEvents;
   private final Blob blob;
+  private final boolean snapshotOnly;
 
   public TableBlob(String dataset, @Nullable String sourceDbSchemaName, String table, Schema targetSchema,
-                   Schema stagingSchema, long batchId, long numEvents, Blob blob) {
+                   Schema stagingSchema, long batchId, long numEvents, Blob blob, boolean snapshotOnly) {
     this.dataset = dataset;
     this.sourceDbSchemaName = sourceDbSchemaName;
     this.table = table;
@@ -44,6 +45,7 @@ public class TableBlob {
     this.batchId = batchId;
     this.blob = blob;
     this.numEvents = numEvents;
+    this.snapshotOnly = snapshotOnly;
   }
 
   public String getDataset() {
@@ -77,5 +79,9 @@ public class TableBlob {
 
   public Blob getBlob() {
     return blob;
+  }
+
+  public boolean isSnapshotOnly() {
+    return snapshotOnly;
   }
 }

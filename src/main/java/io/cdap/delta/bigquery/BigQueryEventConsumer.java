@@ -155,6 +155,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private static final Logger LOG = LoggerFactory.getLogger(BigQueryEventConsumer.class);
   private static final Gson GSON = new Gson();
   private static final String RETAIN_STAGING_TABLE = "retain.staging.table";
+  private static final String DIRECT_LOADING_IN_PROGRESS_PREFIX = "bigquery-direct-load-in-progress-";
 
   private final DeltaTargetContext context;
   private final BigQuery bigQuery;
@@ -348,6 +349,14 @@ public class BigQueryEventConsumer implements EventConsumer {
       case CREATE_TABLE:
         TableId tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
         Table table = bigQuery.getTable(tableId);
+        // SNAPSHOT data is directly loaded in the target table. Check if any such direct load was in progress
+        // for the current table when target received CREATE_TABLE ddl. This indicates that the snapshot was abandoned
+        // because of some failure scenario. Delete the existing table if any.
+        byte[] state = context.getState(String.format(DIRECT_LOADING_IN_PROGRESS_PREFIX + "%s-%s",
+                                                      normalizedDatabaseName, normalizedTableName));
+        if (table != null && state != null && Bytes.toBoolean(state)) {
+          bigQuery.delete(tableId);
+        }
         List<String> primaryKeys = event.getPrimaryKey();
         updatePrimaryKeys(tableId, primaryKeys);
         // TODO: check schema of table if it exists already
@@ -568,22 +577,42 @@ public class BigQueryEventConsumer implements EventConsumer {
 
   @VisibleForTesting
   synchronized void flush() throws InterruptedException, IOException, DeltaFailureException {
-    Collection<TableBlob> tableBlobs;
+    Map<MultiGCSWriter.BlobType, Collection<TableBlob>> tableBlobsByBlobType;
     // if this throws an IOException, we want to propagate it, since we need the app to reset state to the last
     // commit and replay events. This is because previous events are written directly to an outputstream to GCS
     // and then dropped, so we cannot simply retry the flush here.
     try {
-      tableBlobs = gcsWriter.flush();
+      tableBlobsByBlobType = gcsWriter.flush();
     } catch (IOException e) {
       flushException = e;
       throw e;
     }
 
+    processBlobsInParallel(tableBlobsByBlobType.get(MultiGCSWriter.BlobType.SNAPSHOT));
+    processBlobsInParallel(tableBlobsByBlobType.get(MultiGCSWriter.BlobType.STREAMING));
+
+    latestMergedSequence.clear();
+    latestMergedSequence.putAll(latestSeenSequence);
+    commitOffset();
+  }
+
+  private void processBlobsInParallel(Collection<TableBlob> tableBlobs)
+    throws InterruptedException, DeltaFailureException {
     List<Future<?>> mergeFutures = new ArrayList<>(tableBlobs.size());
     for (TableBlob blob : tableBlobs) {
       // submit a callable instead of a runnable so that it can throw checked exceptions
       mergeFutures.add(executorService.submit((Callable<Void>) () -> {
-        mergeTableChanges(blob);
+        if (blob.isSnapshotOnly()) {
+          context.putState(String.format(DIRECT_LOADING_IN_PROGRESS_PREFIX + "%s-%s", blob.getDataset(),
+                                         blob.getTable()),
+                           Bytes.toBytes("true"));
+          directLoadToTarget(blob);
+        } else {
+          context.putState(String.format(DIRECT_LOADING_IN_PROGRESS_PREFIX + "%s-%s", blob.getDataset(),
+                                         blob.getTable()),
+                           Bytes.toBytes("false"));
+          mergeTableChanges(blob);
+        }
         return null;
       }));
     }
@@ -605,17 +634,36 @@ public class BigQueryEventConsumer implements EventConsumer {
     if (exception != null) {
       throw exception;
     }
+  }
 
-    latestMergedSequence.clear();
-    latestMergedSequence.putAll(latestSeenSequence);
-    commitOffset();
+  private void directLoadToTarget(TableBlob blob) throws Exception {
+    LOG.debug("Direct loading batch {} into target table {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
+    TableId targetTableId = TableId.of(project, blob.getDataset(), blob.getTable());
+    long retryDelay = Math.min(91, context.getMaxRetrySeconds()) - 1;
+    runWithRetries(runContext -> loadTable(targetTableId, blob, runContext.getAttemptCount()),
+                   retryDelay,
+                   blob.getDataset(),
+                   blob.getSourceDbSchemaName(),
+                   blob.getTable(),
+                   String.format("Failed to load a batch of changes from GCS into staging table for %s.%s",
+                                 blob.getDataset(), blob.getTable()),
+                   "Exhausted retries while attempting to load changed to the staging table.");
+    try {
+      blob.getBlob().delete();
+    } catch (Exception e) {
+      // there is no retry for this cleanup error since it will not affect future functionality.
+      LOG.warn("Failed to delete temporary GCS object {} in bucket {}. The object will need to be manually deleted.",
+               blob.getBlob().getBlobId().getName(), blob.getBlob().getBlobId().getBucket(), e);
+    }
+    LOG.debug("Direct loading of batch {} into target table {}.{} done", blob.getBatchId(), blob.getDataset(),
+              blob.getTable());
   }
 
   private void mergeTableChanges(TableBlob blob) throws DeltaFailureException, InterruptedException {
     String normalizedStagingTableName = BigQueryUtils.normalize(stagingTablePrefix + blob.getTable());
     TableId stagingTableId = TableId.of(project, blob.getDataset(), normalizedStagingTableName);
     long retryDelay = Math.min(91, context.getMaxRetrySeconds()) - 1;
-    runWithRetries(runContext -> loadStagingTable(stagingTableId, blob, runContext.getAttemptCount()),
+    runWithRetries(runContext -> loadTable(stagingTableId, blob, runContext.getAttemptCount()),
                    retryDelay,
                    blob.getDataset(),
                    blob.getSourceDbSchemaName(),
@@ -649,14 +697,12 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
   }
 
-  private void loadStagingTable(TableId stagingTableId, TableBlob blob, int attemptNumber)
+  private void loadTable(TableId tableId, TableBlob blob, int attemptNumber)
     throws InterruptedException, IOException, DeltaFailureException {
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Loading batch {} of {} events into staging table for {}.{}", blob.getBatchId(), blob.getNumEvents(),
-        blob.getDataset(), blob.getTable());
-    }
-    Table stagingTable = bigQuery.getTable(stagingTableId);
-    if (stagingTable == null) {
+    LOG.info("Loading batch {} of {} events into staging table for {}.{}", blob.getBatchId(), blob.getNumEvents(),
+             blob.getDataset(), blob.getTable());
+    Table table = bigQuery.getTable(tableId);
+    if (table == null) {
       List<String> primaryKeys = getPrimaryKeys(TableId.of(project, blob.getDataset(), blob.getTable()));
       Clustering clustering = maxClusteringColumns <= 0 ? null : Clustering.newBuilder()
         .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
@@ -666,7 +712,7 @@ public class BigQueryEventConsumer implements EventConsumer {
         .setSchema(Schemas.convert(blob.getStagingSchema()))
         .setClustering(clustering)
         .build();
-      TableInfo.Builder builder = TableInfo.newBuilder(stagingTableId, tableDefinition);
+      TableInfo.Builder builder = TableInfo.newBuilder(tableId, tableDefinition);
       if (encryptionConfig != null) {
         builder.setEncryptionConfiguration(encryptionConfig);
       }
@@ -684,7 +730,7 @@ public class BigQueryEventConsumer implements EventConsumer {
       .build();
     BlobId blobId = blob.getBlob().getBlobId();
     String uri = String.format("gs://%s/%s", blobId.getBucket(), blobId.getName());
-    LoadJobConfiguration.Builder jobConfigBuilder = LoadJobConfiguration.newBuilder(stagingTableId, uri)
+    LoadJobConfiguration.Builder jobConfigBuilder = LoadJobConfiguration.newBuilder(tableId, uri)
       .setFormatOptions(FormatOptions.avro());
     if (encryptionConfig != null) {
       jobConfigBuilder.setDestinationEncryptionConfiguration(encryptionConfig);

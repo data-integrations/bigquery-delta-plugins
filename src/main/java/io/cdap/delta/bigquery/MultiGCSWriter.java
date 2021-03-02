@@ -64,6 +64,15 @@ public class MultiGCSWriter {
   private final boolean rowIdSupported;
   private final SourceProperties.Ordering eventOrdering;
 
+  /**
+   * GCS blob type can be SNAPSHOT when all records in the blob represents snapshot or STREAMING
+   * when all records in the blob are part of streaming.
+   */
+  public enum BlobType {
+    SNAPSHOT,
+    STREAMING
+  }
+
   public MultiGCSWriter(Storage storage, String bucket, String baseObjectName,
                         DeltaTargetContext context, ExecutorService executorService) {
     this.storage = storage;
@@ -73,8 +82,7 @@ public class MultiGCSWriter {
     this.schemaMap = new HashMap<>();
     this.context = context;
     this.executorService = executorService;
-    this.rowIdSupported = context.getSourceProperties() == null ? false :
-      context.getSourceProperties().isRowIdSupported();
+    this.rowIdSupported = context.getSourceProperties() != null && context.getSourceProperties().isRowIdSupported();
     this.eventOrdering = context.getSourceProperties() == null ? SourceProperties.Ordering.ORDERED :
       context.getSourceProperties().getOrdering();
   }
@@ -82,10 +90,11 @@ public class MultiGCSWriter {
   public synchronized void write(Sequenced<DMLEvent> sequencedEvent) {
     DMLEvent event = sequencedEvent.getEvent();
     DMLOperation dmlOperation = event.getOperation();
-    Key key = new Key(event.getOperation().getDatabaseName(), dmlOperation.getTableName());
+    Key key = new Key(event.getOperation().getDatabaseName(), dmlOperation.getTableName(), event.isSnapshot());
     TableObject tableObject = objects.computeIfAbsent(key, t -> new TableObject(dmlOperation.getDatabaseName(),
                                                                                 dmlOperation.getSchemaName(),
-                                                                                dmlOperation.getTableName()));
+                                                                                dmlOperation.getTableName(),
+                                                                                event.isSnapshot()));
     try {
       tableObject.writeEvent(sequencedEvent);
     } catch (IOException e) {
@@ -94,9 +103,11 @@ public class MultiGCSWriter {
     }
   }
 
-  public synchronized Collection<TableBlob> flush() throws IOException, InterruptedException {
-    List<TableBlob> writtenObjects = new ArrayList<>(objects.size());
+  public synchronized Map<BlobType, Collection<TableBlob>> flush() throws IOException, InterruptedException {
     List<Future<TableBlob>> writeFutures = new ArrayList<>(objects.size());
+    Map<BlobType, Collection<TableBlob>> result = new HashMap<>();
+    result.put(BlobType.SNAPSHOT, new ArrayList<>());
+    result.put(BlobType.STREAMING, new ArrayList<>());
     for (Map.Entry<Key, TableObject> entry : objects.entrySet()) {
       TableObject tableObject = entry.getValue();
       writeFutures.add(executorService.submit(() -> {
@@ -117,14 +128,17 @@ public class MultiGCSWriter {
         Blob blob = storage.get(tableObject.blobId);
         return new TableBlob(tableObject.dataset, tableObject.sourceDbSchemaName, tableObject.table,
                              tableObject.targetSchema, tableObject.stagingSchema, tableObject.batchId,
-                             tableObject.numEvents, blob);
+                             tableObject.numEvents, blob, tableObject.snapshotOnly);
       }));
     }
 
     IOException error = null;
     for (Future<TableBlob> writeFuture : writeFutures) {
       try {
-        writtenObjects.add(getWriteFuture(writeFuture));
+        TableBlob writtenObject = getWriteFuture(writeFuture);
+        Collection<TableBlob> collection = writtenObject.isSnapshotOnly() ? result.get(BlobType.SNAPSHOT) :
+          result.get(BlobType.STREAMING);
+        collection.add(writtenObject);
       } catch (InterruptedException e) {
         objects.clear();
         throw e;
@@ -141,7 +155,7 @@ public class MultiGCSWriter {
     if (error != null) {
       throw error;
     }
-    return writtenObjects;
+    return result;
   }
 
   private static TableBlob getWriteFuture(Future<TableBlob> writeFuture) throws IOException, InterruptedException {
@@ -162,10 +176,12 @@ public class MultiGCSWriter {
   private class Key {
     private final String database;
     private final String table;
+    private final boolean snapshotOnly;
 
-    private Key(String database, String table) {
+    private Key(String database, String table, boolean snapshotOnly) {
       this.database = database;
       this.table = table;
+      this.snapshotOnly = snapshotOnly;
     }
 
     @Override
@@ -177,13 +193,14 @@ public class MultiGCSWriter {
         return false;
       }
       Key key = (Key) o;
-      return Objects.equals(database, key.database) &&
+      return snapshotOnly == key.snapshotOnly &&
+        Objects.equals(database, key.database) &&
         Objects.equals(table, key.table);
     }
 
     @Override
     public int hashCode() {
-      return Objects.hash(database, table);
+      return Objects.hash(database, table, snapshotOnly);
     }
   }
 
@@ -197,16 +214,18 @@ public class MultiGCSWriter {
     private final String table;
     private final String sourceDbSchemaName;
     private final BlobId blobId;
+    private final boolean snapshotOnly;
     private int numEvents;
     private Schema stagingSchema;
     private Schema targetSchema;
     private DataFileWriter<StructuredRecord> avroWriter;
 
-    private TableObject(String dataset, @Nullable String sourceDbSchemaName, String table) {
+    private TableObject(String dataset, @Nullable String sourceDbSchemaName, String table, boolean snapshotOnly) {
       this.dataset = dataset;
       this.sourceDbSchemaName = sourceDbSchemaName;
       this.table = table;
       this.numEvents = 0;
+      this.snapshotOnly = snapshotOnly;
       batchId = System.currentTimeMillis();
       String objectName = String.format("%s%s/%s/%d", baseObjectName, dataset, table, batchId);
       blobId = BlobId.of(bucket, objectName);
@@ -224,18 +243,19 @@ public class MultiGCSWriter {
         targetSchema = getTargetSchema(row.getSchema());
         stagingSchema = getStagingSchema(row.getSchema());
         DatumWriter<StructuredRecord> datumWriter = new RecordDatumWriter();
-        org.apache.avro.Schema avroSchema = schemaMap.computeIfAbsent(stagingSchema, s -> {
+        org.apache.avro.Schema avroSchema = schemaMap.computeIfAbsent(snapshotOnly ? targetSchema : stagingSchema,
+                                                                      s -> {
           org.apache.avro.Schema.Parser parser = new org.apache.avro.Schema.Parser();
           return parser.parse(s.toString());
         });
         avroWriter = new DataFileWriter<>(datumWriter).create(avroSchema, outputStream);
       }
 
-      StructuredRecord stagingRecord = createStagingRecord(sequencedEvent);
+      StructuredRecord record = createRecord(sequencedEvent);
       if (LOG.isTraceEnabled()) {
-        LOG.trace("Writing record {} to GCS.", GSON.toJson(stagingRecord));
+        LOG.trace("Writing record {} to GCS.", GSON.toJson(record));
       }
-      avroWriter.append(stagingRecord);
+      avroWriter.append(record);
       numEvents++;
     }
 
@@ -326,14 +346,20 @@ public class MultiGCSWriter {
       return Schema.recordOf(schema.getRecordName() + ".staging", fields);
     }
 
-    private StructuredRecord createStagingRecord(Sequenced<DMLEvent> sequencedEvent) {
+    private StructuredRecord createRecord(Sequenced<DMLEvent> sequencedEvent) {
       DMLEvent event = sequencedEvent.getEvent();
       StructuredRecord row = event.getRow();
-      StructuredRecord.Builder builder = StructuredRecord.builder(stagingSchema);
-      builder.set(Constants.OPERATION, event.getOperation().getType().name());
-      builder.set(Constants.BATCH_ID, batchId);
-      builder.set(Constants.SEQUENCE_NUM, sequencedEvent.getSequenceNumber());
+      StructuredRecord.Builder builder;
+      if (snapshotOnly) {
+        builder = StructuredRecord.builder(targetSchema);
+      } else {
+        // _op and _batch_id are only part of the staging schema
+        builder = StructuredRecord.builder(stagingSchema);
+        builder.set(Constants.OPERATION, event.getOperation().getType().name());
+        builder.set(Constants.BATCH_ID, batchId);
+      }
 
+      builder.set(Constants.SEQUENCE_NUM, sequencedEvent.getSequenceNumber());
       for (Schema.Field field : row.getSchema().getFields()) {
         builder.set(field.getName(), row.get(field.getName()));
       }
@@ -351,7 +377,7 @@ public class MultiGCSWriter {
       switch (event.getOperation().getType()) {
         case UPDATE:
           beforeRow = event.getPreviousRow();
-          if (beforeRow == null && !rowIdSupported) {
+          if (beforeRow == null) {
             // should never happen unless the source is implemented incorrectly
             throw new IllegalStateException(String.format(
               "Encountered an update event for %s.%s that did not include the previous column values. "
