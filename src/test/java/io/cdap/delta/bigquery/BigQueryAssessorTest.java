@@ -30,7 +30,7 @@ import static com.google.common.collect.Iterators.getOnlyElement;
 public class BigQueryAssessorTest {
   @Test
   public void testAssessTable_duplicatedTableName() {
-    BigQueryAssessor assessor = new BigQueryAssessor("staging_prefix");
+    BigQueryAssessor assessor = new BigQueryAssessor("staging_prefix", null);
     String dbName = "testDB";
     String tableName = "tableName";
     String schemaName1 = "schemaName1";

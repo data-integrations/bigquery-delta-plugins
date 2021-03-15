@@ -113,7 +113,7 @@ public class BigQueryTarget implements DeltaTarget {
 
     return new BigQueryEventConsumer(context, storage, bigQuery, bucket, project,
                                      conf.getLoadIntervalSeconds(), conf.getStagingTablePrefix(),
-                                     conf.requiresManualDrops(), encryptionConfig, null);
+                                     conf.requiresManualDrops(), encryptionConfig, null, conf.getDatasetName());
   }
 
   @VisibleForTesting
@@ -130,7 +130,7 @@ public class BigQueryTarget implements DeltaTarget {
 
   @Override
   public TableAssessor<StandardizedTableDetail> createTableAssessor(Configurer configurer) {
-    return new BigQueryAssessor(conf.stagingTablePrefix);
+    return new BigQueryAssessor(conf.stagingTablePrefix, conf.datasetName);
   }
 
   private static String stringifyPipelineId(DeltaPipelineId pipelineId) {
@@ -184,6 +184,17 @@ public class BigQueryTarget implements DeltaTarget {
     @Description("Whether to require manual intervention when a drop table or drop database event is encountered.")
     private Boolean requireManualDrops;
 
+    @Nullable
+    @Description(
+      "Optional. By default the dataset name is same as source database name. A valid name should only contain " +
+        "letters, numbers, and underscores and maximum length can be 1024. Any invalid chars would be replaced with " +
+        "underscore in the final dataset name and any characters exceeds length limit will be truncated.")
+    private String datasetName;
+
+    @Nullable
+    public String getDatasetName() {
+      return datasetName;
+    }
     private String getStagingTablePrefix() {
       return stagingTablePrefix == null || stagingTablePrefix.isEmpty() ? "_staging_" : stagingTablePrefix;
     }
