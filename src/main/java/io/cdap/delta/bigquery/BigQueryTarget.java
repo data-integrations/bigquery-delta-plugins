@@ -61,6 +61,7 @@ public class BigQueryTarget implements DeltaTarget {
   private static final Logger LOG = LoggerFactory.getLogger(BigQueryTarget.class);
   public static final String NAME = "bigquery";
   public static final String STAGING_BUCKET_PREFIX = "df-rbq";
+  public static final int CONFLICT = 409;
   private static final String GCS_SCHEME = "gs://";
   private static final String GCP_CMEK_KEY_NAME = "gcp.cmek.key.name";
   private final Conf conf;
@@ -135,10 +136,15 @@ public class BigQueryTarget implements DeltaTarget {
         }
         bucket = storage.create(builder.build());
       } catch (StorageException e) {
-        throw new IOException(
-          String.format("Unable to create staging bucket '%s' in project '%s'. "
-                          + "Please make sure the service account has permission to create buckets, "
-                          + "or create the bucket before starting the program.", stagingBucketName, project), e);
+        // It is possible that in multiple worker instances scenario
+        // bucket is created by another worker instance after this worker instance
+        // determined that the bucket does not exists. Ignore error if bucket already exists.
+        if (e.getCode() != CONFLICT) {
+          throw new IOException(
+            String.format("Unable to create staging bucket '%s' in project '%s'. "
+                            + "Please make sure the service account has permission to create buckets, "
+                            + "or create the bucket before starting the program.", stagingBucketName, project), e);
+        }
       }
     }
 
