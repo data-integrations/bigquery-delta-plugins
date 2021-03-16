@@ -17,6 +17,7 @@
 package io.cdap.delta.bigquery;
 
 import com.google.cloud.bigquery.BigQuery;
+import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.Clustering;
 import com.google.cloud.bigquery.DatasetId;
 import com.google.cloud.bigquery.DatasetInfo;
@@ -328,7 +329,16 @@ public class BigQueryEventConsumer implements EventConsumer {
         DatasetId datasetId = DatasetId.of(project, normalizedDatabaseName);
         if (bigQuery.getDataset(datasetId) == null) {
           DatasetInfo datasetInfo = DatasetInfo.newBuilder(datasetId).setLocation(bucket.getLocation()).build();
-          bigQuery.create(datasetInfo);
+          try {
+            bigQuery.create(datasetInfo);
+          } catch (BigQueryException e) {
+            // It is possible that in multiple worker instances scenario
+            // dataset is created by another worker instance after this worker instance
+            // determined that dataset does not exists. Ignore error if dataset is created.
+            if (e.getCode() != BigQueryTarget.CONFLICT) {
+              throw e;
+            }
+          }
         }
         break;
       case DROP_DATABASE:
