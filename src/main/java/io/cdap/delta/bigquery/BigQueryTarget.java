@@ -145,6 +145,7 @@ public class BigQueryTarget implements DeltaTarget {
                             + "Please make sure the service account has permission to create buckets, "
                             + "or create the bucket before starting the program.", stagingBucketName, project), e);
         }
+        bucket = storage.get(stagingBucketName);
       }
     }
 
