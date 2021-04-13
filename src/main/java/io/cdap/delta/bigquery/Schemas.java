@@ -120,6 +120,8 @@ public class Schemas {
         return StandardSQLTypeName.DATE;
       case DECIMAL:
         return StandardSQLTypeName.NUMERIC;
+      case DATETIME:
+        return StandardSQLTypeName.DATETIME;
     }
     return null;
   }
