@@ -745,6 +745,9 @@ public class BigQueryEventConsumer implements EventConsumer {
     if (encryptionConfig != null) {
       jobConfigBuilder.setDestinationEncryptionConfiguration(encryptionConfig);
     }
+    if (blob.isJsonFormat()) {
+      jobConfigBuilder.setFormatOptions(FormatOptions.json());
+    }
     LoadJobConfiguration loadJobConf = jobConfigBuilder.build();
     JobInfo jobInfo = JobInfo.newBuilder(loadJobConf)
       .setJobId(jobId)
