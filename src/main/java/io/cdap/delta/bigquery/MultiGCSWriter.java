@@ -29,8 +29,6 @@ import io.cdap.delta.api.DeltaTargetContext;
 import io.cdap.delta.api.ReplicationError;
 import io.cdap.delta.api.Sequenced;
 import io.cdap.delta.api.SourceProperties;
-import org.apache.avro.file.DataFileWriter;
-import org.apache.avro.io.DatumWriter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -94,13 +92,30 @@ public class MultiGCSWriter {
     TableObject tableObject = objects.computeIfAbsent(key, t -> new TableObject(dmlOperation.getDatabaseName(),
                                                                                 dmlOperation.getSchemaName(),
                                                                                 dmlOperation.getTableName(),
-                                                                                event.isSnapshot()));
+                                                                                event.isSnapshot(),
+                                                                                isJsonFormat(event.getRow())));
     try {
       tableObject.writeEvent(sequencedEvent);
     } catch (IOException e) {
       // this should never happen, as it's writing to an in memory byte[]
       throw new IllegalStateException(String.format("Unable to write event %s to bytes.", event), e);
     }
+  }
+
+  private boolean isJsonFormat(StructuredRecord record) {
+    List<Schema.Field> fields = record.getSchema().getFields();
+    if (fields == null) {
+      return false;
+    }
+    for (Schema.Field field : fields) {
+      boolean isNullable = field.getSchema().isNullable();
+      Schema.LogicalType logicalType
+        = isNullable ? field.getSchema().getNonNullable().getLogicalType() : field.getSchema().getLogicalType();
+      if (logicalType != null && logicalType.equals(Schema.LogicalType.DATETIME)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   public synchronized Map<BlobType, Collection<TableBlob>> flush() throws IOException, InterruptedException {
@@ -128,7 +143,7 @@ public class MultiGCSWriter {
         Blob blob = storage.get(tableObject.blobId);
         return new TableBlob(tableObject.dataset, tableObject.sourceDbSchemaName, tableObject.table,
                              tableObject.targetSchema, tableObject.stagingSchema, tableObject.batchId,
-                             tableObject.numEvents, blob, tableObject.snapshotOnly);
+                             tableObject.numEvents, blob, tableObject.snapshotOnly, tableObject.jsonFormat);
       }));
     }
 
@@ -215,12 +230,14 @@ public class MultiGCSWriter {
     private final String sourceDbSchemaName;
     private final BlobId blobId;
     private final boolean snapshotOnly;
+    private final boolean jsonFormat;
     private int numEvents;
     private Schema stagingSchema;
     private Schema targetSchema;
-    private DataFileWriter<StructuredRecord> avroWriter;
+    private EventWriter eventWriter;
 
-    private TableObject(String dataset, @Nullable String sourceDbSchemaName, String table, boolean snapshotOnly) {
+    private TableObject(String dataset, @Nullable String sourceDbSchemaName, String table, boolean snapshotOnly,
+                        boolean jsonFormat) {
       this.dataset = dataset;
       this.sourceDbSchemaName = sourceDbSchemaName;
       this.table = table;
@@ -234,35 +251,41 @@ public class MultiGCSWriter {
         LOG.debug("Writing staging records to GCS file {}", objectName);
       }
       outputStream = Channels.newOutputStream(storage.writer(blobInfo));
+      this.jsonFormat = jsonFormat;
     }
 
     private void writeEvent(Sequenced<DMLEvent> sequencedEvent) throws IOException {
       DMLEvent event = sequencedEvent.getEvent();
       StructuredRecord row = event.getRow();
-      if (avroWriter == null) {
+      if (eventWriter == null) {
         targetSchema = getTargetSchema(row.getSchema());
         stagingSchema = getStagingSchema(row.getSchema());
-        DatumWriter<StructuredRecord> datumWriter = new RecordDatumWriter();
-        org.apache.avro.Schema avroSchema = schemaMap.computeIfAbsent(snapshotOnly ? targetSchema : stagingSchema,
-                                                                      s -> {
-          org.apache.avro.Schema.Parser parser = new org.apache.avro.Schema.Parser();
-          return parser.parse(s.toString());
-        });
-        avroWriter = new DataFileWriter<>(datumWriter).create(avroSchema, outputStream);
+
+        if (jsonFormat) {
+          eventWriter = new JsonEventWriter(outputStream);
+        } else {
+          org.apache.avro.Schema avroSchema = schemaMap.computeIfAbsent(snapshotOnly ? targetSchema : stagingSchema,
+                                                                        s -> {
+                                                                          org.apache.avro.Schema.Parser parser
+                                                                            = new org.apache.avro.Schema.Parser();
+                                                                          return parser.parse(s.toString());
+                                                                        });
+          eventWriter = new AvroEventWriter(avroSchema, outputStream);
+        }
       }
 
       StructuredRecord record = createRecord(sequencedEvent);
+      eventWriter.write(record);
       if (LOG.isTraceEnabled()) {
         LOG.trace("Writing record {} to GCS.", GSON.toJson(record));
       }
-      avroWriter.append(record);
       numEvents++;
     }
 
     private void close() throws IOException {
-      if (avroWriter != null) {
+      if (eventWriter != null) {
         try {
-          avroWriter.close();
+          eventWriter.close();
         } finally {
           outputStream.close();
         }
