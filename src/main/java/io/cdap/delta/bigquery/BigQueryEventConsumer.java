@@ -226,7 +226,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     // https://cloud.google.com/bigquery/docs/creating-clustered-tables#limitations
     this.maxClusteringColumns = maxClusteringColumnsStr == null ? 4 : Integer.parseInt(maxClusteringColumnsStr);
     this.sourceRowIdSupported =
-      context.getSourceProperties() == null ? false : context.getSourceProperties().isRowIdSupported();
+      context.getSourceProperties() != null && context.getSourceProperties().isRowIdSupported();
     this.sourceEventOrdering = context.getSourceProperties() == null ? SourceProperties.Ordering.ORDERED :
       context.getSourceProperties().getOrdering();
     this.datasetName = datasetName;
@@ -371,9 +371,11 @@ public class BigQueryEventConsumer implements EventConsumer {
         updatePrimaryKeys(tableId, primaryKeys);
         // TODO: check schema of table if it exists already
         if (table == null) {
-          Clustering clustering = maxClusteringColumns <= 0 ? null :
+          List<String> clusteringSupportedKeys = getClusteringSupportedKeys(primaryKeys, event.getSchema());
+          Clustering clustering = maxClusteringColumns <= 0 || clusteringSupportedKeys.isEmpty() ? null :
             Clustering.newBuilder()
-              .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
+              .setFields(clusteringSupportedKeys.subList(0, Math.min(maxClusteringColumns,
+                                                                     clusteringSupportedKeys.size())))
               .build();
           TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
             .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema())))
@@ -475,6 +477,17 @@ public class BigQueryEventConsumer implements EventConsumer {
         bigQuery.create(tableInfo);
         break;
     }
+  }
+
+  @VisibleForTesting
+  static List<String> getClusteringSupportedKeys(List<String> primaryKeys, Schema recordSchema) {
+    List<String> result = new ArrayList<>();
+    for (String key : primaryKeys) {
+      if (Schemas.isClusteringSupported(recordSchema.getField(key))) {
+        result.add(key);
+      }
+    }
+    return result;
   }
 
   private void updatePrimaryKeys(TableId tableId, List<String> primaryKeys) throws DeltaFailureException, IOException {
