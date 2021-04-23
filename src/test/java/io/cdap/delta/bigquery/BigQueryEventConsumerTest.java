@@ -180,6 +180,82 @@ public class BigQueryEventConsumerTest {
   }
 
   @Test
+  public void testCreateTableWithInvalidTypesForClustering() throws Exception {
+    String bucketName = "bqtest-" + UUID.randomUUID().toString();
+    Bucket bucket = storage.create(BucketInfo.of(bucketName));
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(new MockContext(300, Collections.emptyMap()),
+                                                                    storage, bigQuery, bucket, project, 0,
+                                                                    STAGING_TABLE_PREFIX, true, null, 1L, null);
+
+    String dataset = "testInvalidTypesForClustering";
+    String allinvalidsTableName = "allinvalids";
+    TableId allInvalidsTable = TableId.of(dataset, allinvalidsTableName);
+    String someInvalidsTableName = "someinvalids";
+    TableId someInvalidsTable = TableId.of(dataset, someInvalidsTableName);
+
+    try {
+      bigQuery.create(DatasetInfo.newBuilder(dataset).build());
+
+      // Primary keys with all un-supported types for clustering
+      List<String> primaryKeys = new ArrayList<>();
+      primaryKeys.add("id1");
+      Schema schema = Schema.recordOf(allinvalidsTableName,
+                                      Schema.Field.of("id1", Schema.of(Schema.Type.BYTES)));
+
+      DDLEvent allInvalidsCreateTable = DDLEvent.builder()
+        .setOperation(DDLOperation.Type.CREATE_TABLE)
+        .setDatabaseName(dataset)
+        .setTableName(allinvalidsTableName)
+        .setSchema(schema)
+        .setPrimaryKey(primaryKeys)
+        .setOffset(new Offset())
+        .build();
+      eventConsumer.applyDDL(new Sequenced<>(allInvalidsCreateTable, 0));
+
+      Table table = bigQuery.getTable(allInvalidsTable);
+      StandardTableDefinition tableDefinition = table.getDefinition();
+      Clustering clustering = tableDefinition.getClustering();
+      // No clustering should be added
+      Assert.assertNull(clustering);
+      bigQuery.delete(allInvalidsTable);
+
+      // Primary keys with some un-supported types for clustering
+      primaryKeys = new ArrayList<>();
+      primaryKeys.add("id1");
+      primaryKeys.add("id2");
+      primaryKeys.add("id3");
+      primaryKeys.add("id4");
+      primaryKeys.add("id5");
+      schema = Schema.recordOf(allinvalidsTableName,
+                               Schema.Field.of("id1", Schema.of(Schema.Type.BYTES)),
+                               Schema.Field.of("id2", Schema.of(Schema.Type.BYTES)),
+                               Schema.Field.of("id3", Schema.of(Schema.Type.BYTES)),
+                               Schema.Field.of("id4", Schema.of(Schema.Type.BYTES)),
+                               // add one valid clustering key
+                               Schema.Field.of("id5", Schema.of(Schema.Type.INT)));
+
+      DDLEvent someInvalidsTableCreate = DDLEvent.builder()
+        .setOperation(DDLOperation.Type.CREATE_TABLE)
+        .setDatabaseName(dataset)
+        .setTableName(someInvalidsTableName)
+        .setSchema(schema)
+        .setPrimaryKey(primaryKeys)
+        .setOffset(new Offset())
+        .build();
+      eventConsumer.applyDDL(new Sequenced<>(someInvalidsTableCreate, 0));
+
+      table = bigQuery.getTable(someInvalidsTable);
+      tableDefinition = table.getDefinition();
+      clustering = tableDefinition.getClustering();
+      Assert.assertNotNull(clustering);
+      Assert.assertEquals(primaryKeys.subList(4, 5), clustering.getFields());
+      bigQuery.delete(someInvalidsTable);
+    } finally {
+      cleanupTest(bucket, dataset, eventConsumer);
+    }
+  }
+
+  @Test
   public void testManualDropRetries() throws Exception {
     String bucketName = "bqtest-" + UUID.randomUUID().toString();
     Bucket bucket = storage.create(BucketInfo.of(bucketName));
