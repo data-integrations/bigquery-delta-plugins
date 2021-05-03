@@ -58,7 +58,8 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
     for (Schema.Field field : tableDetail.getSchema().getFields()) {
       try {
         String bqType = toBigQueryType(field);
-        columnAssessments.add(ColumnAssessment.builder(field.getName(), bqType)
+        columnAssessments.add(ColumnAssessment.builder(BigQueryUtils.normalize(field.getName(),
+          BigQueryUtils.FIELD_NAME_MAX_LENGTH) , bqType)
                                 .setSourceColumn(field.getName())
                                 .build());
         if (LOGGER.isDebugEnabled()) {

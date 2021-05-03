@@ -26,11 +26,16 @@ import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableResult;
+import io.cdap.cdap.api.data.format.StructuredRecord;
+import io.cdap.cdap.api.data.schema.Schema;
+import io.cdap.delta.api.DMLEvent;
 import io.cdap.delta.api.SourceTable;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import javax.annotation.Nullable;
@@ -39,6 +44,7 @@ import javax.annotation.Nullable;
  * Utility class for executing queries on BigQuery.
  */
 public final class BigQueryUtils {
+  public static final int FIELD_NAME_MAX_LENGTH = 128;
   private static final int MAX_LENGTH = 1024;
   // according to big query dataset and table naming convention, valid name should only contain letters (upper or
   // lower case), numbers, and underscores
@@ -121,8 +127,10 @@ public final class BigQueryUtils {
 
     return val.getLongValue();
   }
-
   public static String normalize(String name) {
+    return normalize(name, MAX_LENGTH);
+  }
+  public static String normalize(String name, int maxLength) {
     if (name == null) {
       // avoid potential NPE
       return null;
@@ -134,9 +142,39 @@ public final class BigQueryUtils {
     }
 
     // truncate the name if it exceeds the max length
-    if (name.length() > MAX_LENGTH) {
-      name = name.substring(0, MAX_LENGTH);
+    if (name.length() > maxLength) {
+      name = name.substring(0, maxLength);
     }
     return name;
+  }
+
+  public static DMLEvent.Builder normalize(DMLEvent event) {
+
+    DMLEvent.Builder normalizedEventBuilder = DMLEvent.builder(event);
+    if (event.getRow() != null) {
+      normalizedEventBuilder.setRow(normalize(event.getRow()));
+    }
+    if (event.getPreviousRow() != null) {
+      normalizedEventBuilder.setPreviousRow(normalize(event.getRow()));
+    }
+    return normalizedEventBuilder;
+  }
+
+  private static StructuredRecord normalize(StructuredRecord record) {
+    Schema schema = record.getSchema();
+    List<Schema.Field> fields = schema.getFields();
+    List<Schema.Field> normalizedFields = new ArrayList<>(fields.size());
+    Map<String, Object> valueMap = new HashMap<>();
+    for (Schema.Field field : fields) {
+      String normalizedName = normalize(field.getName(), FIELD_NAME_MAX_LENGTH);
+      normalizedFields.add(Schema.Field.of(normalizedName, field.getSchema()));
+      valueMap.put(normalizedName, record.get(field.getName()));
+    }
+    StructuredRecord.Builder builder =
+      StructuredRecord.builder(Schema.recordOf(schema.getRecordName(), normalizedFields));
+    for (Schema.Field normalizedField : normalizedFields) {
+      builder.set(normalizedField.getName(), valueMap.get(normalizedField.getName()));
+    }
+    return builder.build();
   }
 }
