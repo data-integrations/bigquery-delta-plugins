@@ -58,10 +58,8 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
     for (Schema.Field field : tableDetail.getSchema().getFields()) {
       try {
         String bqType = toBigQueryType(field);
-        columnAssessments.add(ColumnAssessment.builder(BigQueryUtils.normalize(field.getName(),
-          BigQueryUtils.FIELD_NAME_MAX_LENGTH) , bqType)
-                                .setSourceColumn(field.getName())
-                                .build());
+        columnAssessments.add(ColumnAssessment.builder(BigQueryUtils.normalizeFieldName(field.getName()), bqType)
+          .setSourceColumn(field.getName()).build());
         if (LOGGER.isDebugEnabled()) {
           LOGGER.debug("Converting schema {} to {}", field.getSchema().isNullable() ?
             field.getSchema().getNonNullable() : field.getSchema(), bqType);
@@ -105,9 +103,9 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
     }
 
     String datasetName = this.datasetName == null ? dbName : this.datasetName;
-    String normalizedDatasetName = BigQueryUtils.normalize(datasetName);
-    String normalizedTableName = BigQueryUtils.normalize(tableName);
-    String normalizedStagingTableName = BigQueryUtils.normalize(stagingTableName);
+    String normalizedDatasetName = BigQueryUtils.normalizeDatasetOrTableName(datasetName);
+    String normalizedTableName = BigQueryUtils.normalizeDatasetOrTableName(tableName);
+    String normalizedStagingTableName = BigQueryUtils.normalizeDatasetOrTableName(stagingTableName);
     if (!datasetName.equals(normalizedDatasetName)) {
       problems.add(
         new Problem("Normalizing Database Name",

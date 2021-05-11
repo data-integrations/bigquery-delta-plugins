@@ -45,7 +45,7 @@ import javax.annotation.Nullable;
  */
 public final class BigQueryUtils {
   public static final int FIELD_NAME_MAX_LENGTH = 128;
-  private static final int MAX_LENGTH = 1024;
+  private static final int DATASET_OR_TABLE_NAME_MAX_LENGTH = 1024;
   // according to big query dataset and table naming convention, valid name should only contain letters (upper or
   // lower case), numbers, and underscores
   private static final String VALID_NAME_REGEX = "[\\w]+";
@@ -65,9 +65,8 @@ public final class BigQueryUtils {
     builder.append("SELECT MAX(max_sequence_num) FROM (");
     List<String> maxSequenceNumQueryPerTable = new ArrayList<>();
     for (SourceTable table : allTables) {
-      TableId tableId = TableId.of(project,
-                                   datasetName != null ? normalize(datasetName) : normalize(table.getDatabase()),
-                                   normalize(table.getTable()));
+      TableId tableId = TableId.of(project, datasetName != null ? normalizeDatasetOrTableName(datasetName) :
+        normalizeDatasetOrTableName(table.getDatabase()), normalizeDatasetOrTableName(table.getTable()));
       if (bigQuery.getTable(tableId) != null) {
         maxSequenceNumQueryPerTable.add(String.format("SELECT MAX(_sequence_num) as max_sequence_num FROM %s.%s",
                                                       tableId.getDataset(), tableId.getTable()));
@@ -127,13 +126,32 @@ public final class BigQueryUtils {
 
     return val.getLongValue();
   }
-  public static String normalize(String name) {
-    return normalize(name, MAX_LENGTH);
+
+  /**
+   * Normalize the dataset or table name according to BigQuery's requirement.
+   * The name  must contain only letters, numbers, and underscores.
+   * And it must be 1024 characters or fewer.
+   * @param name the dataset name or table name to be normalized
+   * @return the normalized name
+   */
+  public static String normalizeDatasetOrTableName(String name) {
+    return normalize(name, DATASET_OR_TABLE_NAME_MAX_LENGTH, true);
   }
-  public static String normalize(String name, int maxLength) {
-    if (name == null) {
-      // avoid potential NPE
-      return null;
+
+  /**
+   * Normalize the field name according to BigQuery's requirement.
+   * The name must contain only letters, numbers, and underscores, start with a letter or underscore.
+   * And it must be 128 characters or fewer.
+   * @param name the field name to be normalized
+   * @return the normalized name
+   */
+  public static String normalizeFieldName(String name) {
+    return normalize(name, FIELD_NAME_MAX_LENGTH, false);
+  }
+
+  private static String normalize(String name, int maxLength, boolean canStartWithNumber) {
+    if (name == null || name.isEmpty()) {
+      return name;
     }
 
     // replace invalid chars with underscores if there are any
@@ -144,6 +162,14 @@ public final class BigQueryUtils {
     // truncate the name if it exceeds the max length
     if (name.length() > maxLength) {
       name = name.substring(0, maxLength);
+    }
+
+    // replace the first character with underscore if it's a number and the name cannot start with number
+    if (!canStartWithNumber) {
+      char first = name.charAt(0);
+      if (first >= '0' && first <= '9') {
+        name = "_" + name.substring(1);
+      }
     }
     return name;
   }
@@ -166,7 +192,7 @@ public final class BigQueryUtils {
     List<Schema.Field> normalizedFields = new ArrayList<>(fields.size());
     Map<String, Object> valueMap = new HashMap<>();
     for (Schema.Field field : fields) {
-      String normalizedName = normalize(field.getName(), FIELD_NAME_MAX_LENGTH);
+      String normalizedName = normalizeFieldName(field.getName());
       normalizedFields.add(Schema.Field.of(normalizedName, field.getSchema()));
       valueMap.put(normalizedName, record.get(field.getName()));
     }
