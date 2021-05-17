@@ -271,11 +271,11 @@ public class BigQueryEventConsumer implements EventConsumer {
     DDLEvent event = sequencedEvent.getEvent();
     DDLOperation ddlOperation = event.getOperation();
     String normalizedDatabaseName = datasetName == null ?
-      BigQueryUtils.normalize(event.getOperation().getDatabaseName()) :
-      BigQueryUtils.normalize(datasetName);
-    String normalizedTableName = BigQueryUtils.normalize(ddlOperation.getTableName());
+      BigQueryUtils.normalizeDatasetOrTableName(event.getOperation().getDatabaseName()) :
+      BigQueryUtils.normalizeDatasetOrTableName(datasetName);
+    String normalizedTableName = BigQueryUtils.normalizeDatasetOrTableName(ddlOperation.getTableName());
     String normalizedStagingTableName = normalizedTableName == null ? null :
-      BigQueryUtils.normalize(stagingTablePrefix + normalizedTableName);
+      BigQueryUtils.normalizeDatasetOrTableName(stagingTablePrefix + normalizedTableName);
 
     runWithRetries(ctx -> handleDDL(event, normalizedDatabaseName, normalizedTableName, normalizedStagingTableName),
                    baseRetryDelay,
@@ -555,9 +555,9 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
     DMLEvent event = sequencedEvent.getEvent();
     String normalizedDatabaseName = datasetName == null ?
-      BigQueryUtils.normalize(event.getOperation().getDatabaseName()) :
-      BigQueryUtils.normalize(datasetName);
-    String normalizedTableName = BigQueryUtils.normalize(event.getOperation().getTableName());
+      BigQueryUtils.normalizeDatasetOrTableName(event.getOperation().getDatabaseName()) :
+      BigQueryUtils.normalizeDatasetOrTableName(datasetName);
+    String normalizedTableName = BigQueryUtils.normalizeDatasetOrTableName(event.getOperation().getTableName());
     DMLEvent normalizedDMLEvent = DMLEvent.builder(event)
       .setDatabaseName(normalizedDatabaseName)
       .setTableName(normalizedTableName)
@@ -683,7 +683,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   private void mergeTableChanges(TableBlob blob) throws DeltaFailureException, InterruptedException {
-    String normalizedStagingTableName = BigQueryUtils.normalize(stagingTablePrefix + blob.getTable());
+    String normalizedStagingTableName = BigQueryUtils.normalizeDatasetOrTableName(stagingTablePrefix + blob.getTable());
     TableId stagingTableId = TableId.of(project, blob.getDataset(), normalizedStagingTableName);
     long retryDelay = Math.min(91, context.getMaxRetrySeconds()) - 1;
     runWithRetries(runContext -> loadTable(stagingTableId, blob, runContext.getAttemptCount()),

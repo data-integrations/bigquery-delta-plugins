@@ -26,11 +26,16 @@ import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableResult;
+import io.cdap.cdap.api.data.format.StructuredRecord;
+import io.cdap.cdap.api.data.schema.Schema;
+import io.cdap.delta.api.DMLEvent;
 import io.cdap.delta.api.SourceTable;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import javax.annotation.Nullable;
@@ -39,7 +44,8 @@ import javax.annotation.Nullable;
  * Utility class for executing queries on BigQuery.
  */
 public final class BigQueryUtils {
-  private static final int MAX_LENGTH = 1024;
+  public static final int FIELD_NAME_MAX_LENGTH = 128;
+  private static final int DATASET_OR_TABLE_NAME_MAX_LENGTH = 1024;
   // according to big query dataset and table naming convention, valid name should only contain letters (upper or
   // lower case), numbers, and underscores
   private static final String VALID_NAME_REGEX = "[\\w]+";
@@ -59,9 +65,8 @@ public final class BigQueryUtils {
     builder.append("SELECT MAX(max_sequence_num) FROM (");
     List<String> maxSequenceNumQueryPerTable = new ArrayList<>();
     for (SourceTable table : allTables) {
-      TableId tableId = TableId.of(project,
-                                   datasetName != null ? normalize(datasetName) : normalize(table.getDatabase()),
-                                   normalize(table.getTable()));
+      TableId tableId = TableId.of(project, datasetName != null ? normalizeDatasetOrTableName(datasetName) :
+        normalizeDatasetOrTableName(table.getDatabase()), normalizeDatasetOrTableName(table.getTable()));
       if (bigQuery.getTable(tableId) != null) {
         maxSequenceNumQueryPerTable.add(String.format("SELECT MAX(_sequence_num) as max_sequence_num FROM %s.%s",
                                                       tableId.getDataset(), tableId.getTable()));
@@ -122,10 +127,31 @@ public final class BigQueryUtils {
     return val.getLongValue();
   }
 
-  public static String normalize(String name) {
-    if (name == null) {
-      // avoid potential NPE
-      return null;
+  /**
+   * Normalize the dataset or table name according to BigQuery's requirement.
+   * The name  must contain only letters, numbers, and underscores.
+   * And it must be 1024 characters or fewer.
+   * @param name the dataset name or table name to be normalized
+   * @return the normalized name
+   */
+  public static String normalizeDatasetOrTableName(String name) {
+    return normalize(name, DATASET_OR_TABLE_NAME_MAX_LENGTH, true);
+  }
+
+  /**
+   * Normalize the field name according to BigQuery's requirement.
+   * The name must contain only letters, numbers, and underscores, start with a letter or underscore.
+   * And it must be 128 characters or fewer.
+   * @param name the field name to be normalized
+   * @return the normalized name
+   */
+  public static String normalizeFieldName(String name) {
+    return normalize(name, FIELD_NAME_MAX_LENGTH, false);
+  }
+
+  private static String normalize(String name, int maxLength, boolean canStartWithNumber) {
+    if (name == null || name.isEmpty()) {
+      return name;
     }
 
     // replace invalid chars with underscores if there are any
@@ -133,10 +159,50 @@ public final class BigQueryUtils {
       name = name.replaceAll(INVALID_NAME_REGEX, "_");
     }
 
-    // truncate the name if it exceeds the max length
-    if (name.length() > MAX_LENGTH) {
-      name = name.substring(0, MAX_LENGTH);
+    // prepend underscore if the first character is a number and the name cannot start with number
+    if (!canStartWithNumber) {
+      char first = name.charAt(0);
+      if (first >= '0' && first <= '9') {
+        name = "_" + name;
+      }
     }
+
+    // truncate the name if it exceeds the max length
+    if (name.length() > maxLength) {
+      name = name.substring(0, maxLength);
+    }
+
+
     return name;
+  }
+
+  public static DMLEvent.Builder normalize(DMLEvent event) {
+
+    DMLEvent.Builder normalizedEventBuilder = DMLEvent.builder(event);
+    if (event.getRow() != null) {
+      normalizedEventBuilder.setRow(normalize(event.getRow()));
+    }
+    if (event.getPreviousRow() != null) {
+      normalizedEventBuilder.setPreviousRow(normalize(event.getRow()));
+    }
+    return normalizedEventBuilder;
+  }
+
+  private static StructuredRecord normalize(StructuredRecord record) {
+    Schema schema = record.getSchema();
+    List<Schema.Field> fields = schema.getFields();
+    List<Schema.Field> normalizedFields = new ArrayList<>(fields.size());
+    Map<String, Object> valueMap = new HashMap<>();
+    for (Schema.Field field : fields) {
+      String normalizedName = normalizeFieldName(field.getName());
+      normalizedFields.add(Schema.Field.of(normalizedName, field.getSchema()));
+      valueMap.put(normalizedName, record.get(field.getName()));
+    }
+    StructuredRecord.Builder builder =
+      StructuredRecord.builder(Schema.recordOf(schema.getRecordName(), normalizedFields));
+    for (Schema.Field normalizedField : normalizedFields) {
+      builder.set(normalizedField.getName(), valueMap.get(normalizedField.getName()));
+    }
+    return builder.build();
   }
 }
