@@ -159,18 +159,20 @@ public final class BigQueryUtils {
       name = name.replaceAll(INVALID_NAME_REGEX, "_");
     }
 
+    // prepend underscore if the first character is a number and the name cannot start with number
+    if (!canStartWithNumber) {
+      char first = name.charAt(0);
+      if (first >= '0' && first <= '9') {
+        name = "_" + name;
+      }
+    }
+
     // truncate the name if it exceeds the max length
     if (name.length() > maxLength) {
       name = name.substring(0, maxLength);
     }
 
-    // replace the first character with underscore if it's a number and the name cannot start with number
-    if (!canStartWithNumber) {
-      char first = name.charAt(0);
-      if (first >= '0' && first <= '9') {
-        name = "_" + name.substring(1);
-      }
-    }
+
     return name;
   }
 
