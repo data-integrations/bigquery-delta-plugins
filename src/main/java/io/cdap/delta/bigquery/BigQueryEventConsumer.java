@@ -608,12 +608,12 @@ public class BigQueryEventConsumer implements EventConsumer {
         if (blob.isSnapshotOnly()) {
           context.putState(String.format(DIRECT_LOADING_IN_PROGRESS_PREFIX + "%s-%s", blob.getDataset(),
                                          blob.getTable()),
-                           Bytes.toBytes("true"));
+                           Bytes.toBytes(true));
           directLoadToTarget(blob);
         } else {
           context.putState(String.format(DIRECT_LOADING_IN_PROGRESS_PREFIX + "%s-%s", blob.getDataset(),
                                          blob.getTable()),
-                           Bytes.toBytes("false"));
+                           Bytes.toBytes(false));
           mergeTableChanges(blob);
         }
         return null;
