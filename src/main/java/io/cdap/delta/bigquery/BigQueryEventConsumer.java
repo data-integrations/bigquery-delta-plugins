@@ -17,10 +17,7 @@
 package io.cdap.delta.bigquery;
 
 import com.google.cloud.bigquery.BigQuery;
-import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.Clustering;
-import com.google.cloud.bigquery.DatasetId;
-import com.google.cloud.bigquery.DatasetInfo;
 import com.google.cloud.bigquery.EncryptionConfiguration;
 import com.google.cloud.bigquery.FormatOptions;
 import com.google.cloud.bigquery.Job;
@@ -36,7 +33,6 @@ import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.Bucket;
 import com.google.cloud.storage.Storage;
-import com.google.common.annotations.VisibleForTesting;
 import com.google.gson.Gson;
 import io.cdap.cdap.api.common.Bytes;
 import io.cdap.cdap.api.data.schema.Schema;
@@ -50,6 +46,7 @@ import io.cdap.delta.api.Offset;
 import io.cdap.delta.api.ReplicationError;
 import io.cdap.delta.api.Sequenced;
 import io.cdap.delta.api.SourceProperties;
+import io.cdap.delta.bigquery.event.*;
 import net.jodah.failsafe.Failsafe;
 import net.jodah.failsafe.FailsafeException;
 import net.jodah.failsafe.RetryPolicy;
@@ -156,7 +153,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private static final Logger LOG = LoggerFactory.getLogger(BigQueryEventConsumer.class);
   private static final Gson GSON = new Gson();
   private static final String RETAIN_STAGING_TABLE = "retain.staging.table";
-  private static final String DIRECT_LOADING_IN_PROGRESS_PREFIX = "bigquery-direct-load-in-progress-";
+  public static final String DIRECT_LOADING_IN_PROGRESS_PREFIX = "bigquery-direct-load-in-progress-";
 
   private final DeltaTargetContext context;
   private final BigQuery bigQuery;
@@ -183,6 +180,8 @@ public class BigQueryEventConsumer implements EventConsumer {
   private Offset latestOffset;
   private long latestSequenceNum;
   private Exception flushException;
+
+  private EventDispatcher dispatcher;
   // have to keep all the records in memory in case there is a failure writing to GCS
   // cannot write to a temporary file on local disk either in case there is a failure writing to disk
   // Without keeping the entire batch in memory, there would be no way to recover the records that failed to write
@@ -191,6 +190,25 @@ public class BigQueryEventConsumer implements EventConsumer {
                         String project, int loadIntervalSeconds, String stagingTablePrefix, boolean requireManualDrops,
                         @Nullable EncryptionConfiguration encryptionConfig, @Nullable Long baseRetryDelay,
                         @Nullable String datasetName) {
+
+    this.primaryKeyStore = new HashMap<>();
+
+
+    String maxClusteringColumnsStr = context.getRuntimeArguments().get("gcp.bigquery.max.clustering.columns");
+    this.maxClusteringColumns = maxClusteringColumnsStr == null ? 4 : Integer.parseInt(maxClusteringColumnsStr);
+
+    EventHandlerConfig handlerConfig = new EventHandlerConfig(context, bigQuery, project, bucket, primaryKeyStore, requireManualDrops, maxClusteringColumns, encryptionConfig);
+
+    this.dispatcher = new EventDispatcher(
+            new DropDatabase(this, handlerConfig),
+            new CreateDatabase(this, handlerConfig),
+            new DropTable(this, handlerConfig),
+            new CreateTable(this, handlerConfig),
+            new AlterTable(this, handlerConfig),
+            new TruncateTable(this, handlerConfig),
+            new RenameTable(this, handlerConfig)
+    );
+
     this.context = context;
     this.bigQuery = bigQuery;
     this.loadIntervalSeconds = loadIntervalSeconds;
@@ -203,7 +221,6 @@ public class BigQueryEventConsumer implements EventConsumer {
     // these maps are only accessed in synchronized methods so they do not need to be thread safe.
     this.latestMergedSequence = new HashMap<>();
     this.latestSeenSequence = new HashMap<>();
-    this.primaryKeyStore = new HashMap<>();
     this.commitRetryPolicy = new RetryPolicy<>()
       .withMaxAttempts(Integer.MAX_VALUE)
       .withMaxDuration(Duration.of(5, ChronoUnit.MINUTES))
@@ -221,10 +238,8 @@ public class BigQueryEventConsumer implements EventConsumer {
                                         String.format("cdap/delta/%s/", context.getApplicationName()),
                                         context, executorService);
     this.baseRetryDelay = baseRetryDelay == null ? 10L : baseRetryDelay;
-    String maxClusteringColumnsStr = context.getRuntimeArguments().get("gcp.bigquery.max.clustering.columns");
     // current max clustering columns is set as 4 in big query side, use that as default max value
     // https://cloud.google.com/bigquery/docs/creating-clustered-tables#limitations
-    this.maxClusteringColumns = maxClusteringColumnsStr == null ? 4 : Integer.parseInt(maxClusteringColumnsStr);
     this.sourceRowIdSupported =
       context.getSourceProperties() != null && context.getSourceProperties().isRowIdSupported();
     this.sourceEventOrdering = context.getSourceProperties() == null ? SourceProperties.Ordering.ORDERED :
@@ -277,7 +292,8 @@ public class BigQueryEventConsumer implements EventConsumer {
     String normalizedStagingTableName = normalizedTableName == null ? null :
       BigQueryUtils.normalizeDatasetOrTableName(stagingTablePrefix + normalizedTableName);
 
-    runWithRetries(ctx -> handleDDL(event, normalizedDatabaseName, normalizedTableName, normalizedStagingTableName),
+
+    runWithRetries(ctx -> dispatcher.handler(event).handleDDL(event, normalizedDatabaseName, normalizedTableName, normalizedStagingTableName),
                    baseRetryDelay,
                    normalizedDatabaseName,
                    event.getOperation().getSchemaName(),
@@ -300,167 +316,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
   }
 
-  private void handleDDL(DDLEvent event, String normalizedDatabaseName, String normalizedTableName,
-                         String normalizedStagingTableName)
-    throws IOException, DeltaFailureException, InterruptedException {
-
-    switch (event.getOperation().getType()) {
-      case CREATE_DATABASE:
-        DatasetId datasetId = DatasetId.of(project, normalizedDatabaseName);
-        if (bigQuery.getDataset(datasetId) == null) {
-          DatasetInfo datasetInfo = DatasetInfo.newBuilder(datasetId).setLocation(bucket.getLocation()).build();
-          try {
-            bigQuery.create(datasetInfo);
-          } catch (BigQueryException e) {
-            // It is possible that in multiple worker instances scenario
-            // dataset is created by another worker instance after this worker instance
-            // determined that dataset does not exists. Ignore error if dataset is created.
-            if (e.getCode() != BigQueryTarget.CONFLICT) {
-              throw e;
-            }
-          }
-        }
-        break;
-      case DROP_DATABASE:
-        datasetId = DatasetId.of(project, normalizedDatabaseName);
-        primaryKeyStore.clear();
-        if (bigQuery.getDataset(datasetId) != null) {
-          if (requireManualDrops) {
-            String message = String.format("Encountered an event to drop dataset '%s' in project '%s', " +
-                                             "but the target is configured to require manual drops. " +
-                                             "Please manually drop the dataset to make progress.",
-                                           normalizedDatabaseName, project);
-            LOG.error(message);
-            throw new RuntimeException(message);
-          }
-          bigQuery.delete(datasetId);
-        }
-        break;
-      case CREATE_TABLE:
-        TableId tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
-        Table table = bigQuery.getTable(tableId);
-        // SNAPSHOT data is directly loaded in the target table. Check if any such direct load was in progress
-        // for the current table when target received CREATE_TABLE ddl. This indicates that the snapshot was abandoned
-        // because of some failure scenario. Delete the existing table if any.
-        byte[] state = context.getState(String.format(DIRECT_LOADING_IN_PROGRESS_PREFIX + "%s-%s",
-                                                      normalizedDatabaseName, normalizedTableName));
-        if (table != null && state != null && Bytes.toBoolean(state)) {
-          bigQuery.delete(tableId);
-        }
-        List<String> primaryKeys = event.getPrimaryKey();
-        updatePrimaryKeys(tableId, primaryKeys);
-        // TODO: check schema of table if it exists already
-        if (table == null) {
-          List<String> clusteringSupportedKeys = getClusteringSupportedKeys(primaryKeys, event.getSchema());
-          Clustering clustering = maxClusteringColumns <= 0 || clusteringSupportedKeys.isEmpty() ? null :
-            Clustering.newBuilder()
-              .setFields(clusteringSupportedKeys.subList(0, Math.min(maxClusteringColumns,
-                                                                     clusteringSupportedKeys.size())))
-              .build();
-          TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
-            .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema())))
-            .setClustering(clustering)
-            .build();
-
-          TableInfo.Builder builder = TableInfo.newBuilder(tableId, tableDefinition);
-          if (encryptionConfig != null) {
-            builder.setEncryptionConfiguration(encryptionConfig);
-          }
-          TableInfo tableInfo = builder.build();
-          bigQuery.create(tableInfo);
-        }
-        break;
-      case DROP_TABLE:
-        // need to flush changes before dropping the table, otherwise the next flush will write data that
-        // shouldn't exist
-        flush();
-        tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
-        primaryKeyStore.remove(tableId);
-        table = bigQuery.getTable(tableId);
-        if (table != null) {
-          if (requireManualDrops) {
-            String message = String.format("Encountered an event to drop table '%s' in dataset '%s' in project '%s', " +
-                                             "but the target is configured to require manual drops. " +
-                                             "Please manually drop the table to make progress.",
-                                           normalizedTableName, normalizedDatabaseName, project);
-            LOG.error(message);
-            throw new RuntimeException(message);
-          }
-          bigQuery.delete(tableId);
-        }
-        TableId stagingTableId = TableId.of(project, normalizedDatabaseName, normalizedStagingTableName);
-        Table stagingTable = bigQuery.getTable(stagingTableId);
-        if (stagingTable != null) {
-          bigQuery.delete(stagingTableId);
-        }
-        break;
-      case ALTER_TABLE:
-        // need to flush any changes before altering the table to ensure all changes before the schema change
-        // are in the table when it is altered.
-        flush();
-        // after a flush, the staging table will be gone, so no need to alter it.
-        tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
-        table = bigQuery.getTable(tableId);
-        primaryKeys = event.getPrimaryKey();
-        Clustering clustering = maxClusteringColumns <= 0 ? null :
-          Clustering.newBuilder()
-            .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
-            .build();
-        TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
-          .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema())))
-          .setClustering(clustering)
-          .build();
-        TableInfo.Builder builder = TableInfo.newBuilder(tableId, tableDefinition);
-        if (encryptionConfig != null) {
-          builder.setEncryptionConfiguration(encryptionConfig);
-        }
-        TableInfo tableInfo = builder.build();
-        if (table == null) {
-          bigQuery.create(tableInfo);
-        } else {
-          bigQuery.update(tableInfo);
-        }
-
-        updatePrimaryKeys(tableId, primaryKeys);
-        break;
-      case RENAME_TABLE:
-        // TODO: flush changes, execute a copy job, delete previous table, drop old staging table, remove old entry
-        //  in primaryKeyStore, put new entry in primaryKeyStore
-        LOG.warn("Rename DDL events are not supported. Ignoring rename event in database {} from table {} to table {}.",
-          event.getOperation().getDatabaseName(), event.getOperation().getPrevTableName(),
-          event.getOperation().getTableName());
-        break;
-      case TRUNCATE_TABLE:
-        flush();
-        tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
-        table = bigQuery.getTable(tableId);
-        if (table != null) {
-          tableDefinition = table.getDefinition();
-          bigQuery.delete(tableId);
-        } else {
-          primaryKeys = event.getPrimaryKey();
-          clustering = maxClusteringColumns <= 0 ? null :
-            Clustering.newBuilder()
-              .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
-              .build();
-          tableDefinition = StandardTableDefinition.newBuilder()
-            .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema())))
-            .setClustering(clustering)
-            .build();
-        }
-
-        builder = TableInfo.newBuilder(tableId, tableDefinition);
-        if (encryptionConfig != null) {
-          builder.setEncryptionConfiguration(encryptionConfig);
-        }
-        tableInfo = builder.build();
-        bigQuery.create(tableInfo);
-        break;
-    }
-  }
-
-  @VisibleForTesting
-  static List<String> getClusteringSupportedKeys(List<String> primaryKeys, Schema recordSchema) {
+  public static List<String> getClusteringSupportedKeys(List<String> primaryKeys, Schema recordSchema) {
     List<String> result = new ArrayList<>();
     for (String key : primaryKeys) {
       if (Schemas.isClusteringSupported(recordSchema.getField(key))) {
@@ -470,11 +326,12 @@ public class BigQueryEventConsumer implements EventConsumer {
     return result;
   }
 
-  private void updatePrimaryKeys(TableId tableId, List<String> primaryKeys) throws DeltaFailureException, IOException {
+  // made this public to give access to DDLEventHandler(s)
+  public void updatePrimaryKeys(TableId tableId, List<String> primaryKeys) throws DeltaFailureException, IOException {
     if (primaryKeys.isEmpty()) {
       throw new DeltaFailureException(
-        String.format("Table '%s' in database '%s' has no primary key. Tables without a primary key are" +
-                        " not supported.", tableId.getTable(), tableId.getDataset()));
+              String.format("Table '%s' in database '%s' has no primary key. Tables without a primary key are" +
+                      " not supported.", tableId.getTable(), tableId.getDataset()));
     }
     List<String> existingKey = primaryKeyStore.get(tableId);
     if (primaryKeys.equals(existingKey)) {
@@ -482,7 +339,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
     primaryKeyStore.put(tableId, primaryKeys);
     context.putState(String.format("bigquery-%s-%s", tableId.getDataset(), tableId.getTable()),
-                     Bytes.toBytes(GSON.toJson(new BigQueryTableState(primaryKeys))));
+            Bytes.toBytes(GSON.toJson(new BigQueryTableState(primaryKeys))));
   }
 
   private List<String> getPrimaryKeys(TableId targetTableId) throws IOException, DeltaFailureException {
@@ -502,7 +359,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     return primaryKeys;
   }
 
-  static Schema addSupplementaryColumnsToTargetSchema(Schema original) {
+  public static Schema addSupplementaryColumnsToTargetSchema(Schema original) {
     List<Schema.Field> fields = new ArrayList<>(original.getFields().size() + 4);
     fields.add(Schema.Field.of(Constants.SEQUENCE_NUM, Schema.of(Schema.Type.LONG)));
     fields.add(Schema.Field.of(Constants.IS_DELETED, Schema.nullableOf(Schema.of(Schema.Type.BOOLEAN))));
@@ -578,8 +435,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
   }
 
-  @VisibleForTesting
-  synchronized void flush() throws InterruptedException, IOException, DeltaFailureException {
+  public synchronized void flush() throws InterruptedException, IOException, DeltaFailureException {
     Map<MultiGCSWriter.BlobType, Collection<TableBlob>> tableBlobsByBlobType;
     // if this throws an IOException, we want to propagate it, since we need the app to reset state to the last
     // commit and replay events. This is because previous events are written directly to an outputstream to GCS
