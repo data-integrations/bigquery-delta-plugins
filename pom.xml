@@ -22,7 +22,7 @@
 
   <groupId>io.cdap.delta</groupId>
   <artifactId>bigquery-delta-plugins</artifactId>
-  <version>0.3.1</version>
+  <version>0.3.2-SNAPSHOT</version>
   <name>BigQuery Delta plugins</name>
   <packaging>jar</packaging>
   <description>BigQuery Delta plugins</description>
