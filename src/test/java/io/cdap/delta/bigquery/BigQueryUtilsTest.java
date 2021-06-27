@@ -17,12 +17,45 @@
 
 package io.cdap.delta.bigquery;
 
+import com.google.cloud.bigquery.BigQuery;
+import com.google.cloud.bigquery.Table;
 import com.google.common.base.Strings;
+import io.cdap.delta.api.SourceTable;
+import org.junit.Before;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.ArgumentMatchers;
+import org.mockito.Mockito;
+import org.powermock.api.mockito.PowerMockito;
+import org.powermock.core.classloader.annotations.PrepareForTest;
+import org.powermock.modules.junit4.PowerMockRunner;
+
+import java.util.HashSet;
+import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
+import static org.mockito.Mockito.times;
 
+@PrepareForTest(BigQueryUtils.class)
+@RunWith(PowerMockRunner.class)
 public class BigQueryUtilsTest {
+
+  BigQuery bigQueryMock;
+  Table tableMock;
+
+  @Before
+  public void init() throws Exception {
+    //Mocks
+    bigQueryMock = Mockito.mock(BigQuery.class);
+    tableMock = Mockito.mock(Table.class);
+    Mockito.when(bigQueryMock.getTable(ArgumentMatchers.any())).thenReturn(tableMock);
+    PowerMockito.spy(BigQueryUtils.class);
+
+    //Stubs
+    PowerMockito.doReturn(1L,2L,3L,4L)
+      .when(BigQueryUtils.class, "executeAggregateQuery",
+            ArgumentMatchers.eq(bigQueryMock),ArgumentMatchers.any(),ArgumentMatchers.any());
+  }
 
   @Test
   public void testNormalizeDataSetOrTableName() {
@@ -63,4 +96,93 @@ public class BigQueryUtilsTest {
     // contains space
     assertEquals("a2_fs", BigQueryUtils.normalizeFieldName("a2 fs"));
   }
+
+
+  @Test
+  public void testGetMaximumExistingSequenceNumberZeroInvocations() throws Exception {
+
+    // Zero Tables
+    Set<SourceTable> allTables = generateSourceTableSet(0);
+    long tableResult0 = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, "testproject",
+                                                                       null, bigQueryMock, null);
+    assertEquals(0L, tableResult0);
+    PowerMockito.verifyPrivate(BigQueryUtils.class, times(0))
+      .invoke("executeAggregateQuery", ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
+
+  }
+
+  @Test
+  public void testGetMaximumExistingSequenceNumberSingleInvocations() throws Exception {
+
+    // Subtest : One Table
+    Set<SourceTable> allTables = generateSourceTableSet(1);
+    long tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, "testproject",
+                                                                      null, bigQueryMock, null);
+    assertEquals(1L, tableResult);
+    PowerMockito.verifyPrivate(BigQueryUtils.class, times(1))
+      .invoke("executeAggregateQuery", ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
+
+    // Subtest2 : Ten Tables
+    allTables = generateSourceTableSet(10);
+    tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, "testproject",
+                                                                 null, bigQueryMock, null);
+    assertEquals(2L, tableResult);
+    PowerMockito.verifyPrivate(BigQueryUtils.class, times(2))
+      .invoke("executeAggregateQuery", ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
+
+    // Subtest3 : 1000 Tables
+    allTables = generateSourceTableSet(1000);
+    tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, "testproject",
+                                                                 null, bigQueryMock, null);
+    assertEquals(3L, tableResult);
+    PowerMockito.verifyPrivate(BigQueryUtils.class, times(3))
+      .invoke("executeAggregateQuery", ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
+
+  }
+
+  @Test
+  public void testGetMaximumExistingSequenceNumberDoubleInvocations() throws Exception {
+
+    //Subtest1 :  1001 Tables : Should call bigquery 2 times. 1000+1
+    Set<SourceTable> allTables = generateSourceTableSet(1001);
+    long tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, "testproject",
+                                                                      null, bigQueryMock, null);
+    assertEquals(2L, tableResult);
+    PowerMockito.verifyPrivate(BigQueryUtils.class, times(2))
+      .invoke("executeAggregateQuery", ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
+
+    //Subtest2 :  2000 Tables : Should call bigquery 2 times. 1000+1000
+    allTables = generateSourceTableSet(2000);
+    tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, "testproject",
+                                                                 null, bigQueryMock, null);
+    assertEquals(4L, tableResult);
+    PowerMockito.verifyPrivate(BigQueryUtils.class, times(4))
+      .invoke("executeAggregateQuery", ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
+
+  }
+
+  @Test
+  public void testGetMaximumExistingSequenceNumberTripleInvocations() throws Exception {
+
+    //Subtest1 :  2500 Tables : Should call bigquery 3 times. 1000+1000+500
+    Set<SourceTable> allTables = generateSourceTableSet(2500);
+    long tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, "testproject",
+                                                                      null, bigQueryMock, null);
+    assertEquals(3L, tableResult);
+    PowerMockito.verifyPrivate(BigQueryUtils.class, times(3))
+      .invoke("executeAggregateQuery", ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
+
+  }
+
+
+  // Helpers Functions :
+  private Set<SourceTable> generateSourceTableSet(int noOfTables) {
+    Set<SourceTable> allTables = new HashSet<>();
+    for (int i = 0; i < noOfTables; i++) {
+      allTables.add(new SourceTable("testdatabase", "testtable_" + (i + 1),
+                                    null, null, new HashSet<>(), new HashSet<>()));
+    }
+    return allTables;
+  }
+
 }

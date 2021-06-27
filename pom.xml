@@ -61,6 +61,7 @@
     <failsafe.version>2.3.3</failsafe.version>
     <gcs.version>1.78.0</gcs.version>
     <logback.version>1.2.3</logback.version>
+    <powermock.version>2.0.9</powermock.version>
   </properties>
 
   <repositories>
@@ -153,6 +154,18 @@
       <groupId>ch.qos.logback</groupId>
       <artifactId>logback-classic</artifactId>
       <version>${logback.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.powermock</groupId>
+      <artifactId>powermock-module-junit4</artifactId>
+      <version>${powermock.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.powermock</groupId>
+      <artifactId>powermock-api-mockito2</artifactId>
+      <version>${powermock.version}</version>
       <scope>test</scope>
     </dependency>
   </dependencies>
