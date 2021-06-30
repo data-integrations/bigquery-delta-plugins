@@ -40,6 +40,7 @@ import javax.annotation.Nullable;
  */
 public final class BigQueryUtils {
   private static final int MAX_LENGTH = 1024;
+  static final String BACKTICK = "`";
   // according to big query dataset and table naming convention, valid name should only contain letters (upper or
   // lower case), numbers, and underscores
   private static final String VALID_NAME_REGEX = "[\\w]+";
@@ -63,8 +64,8 @@ public final class BigQueryUtils {
                                    datasetName != null ? normalize(datasetName) : normalize(table.getDatabase()),
                                    normalize(table.getTable()));
       if (bigQuery.getTable(tableId) != null) {
-        maxSequenceNumQueryPerTable.add(String.format("SELECT MAX(_sequence_num) as max_sequence_num FROM %s.%s",
-                                                      tableId.getDataset(), tableId.getTable()));
+        maxSequenceNumQueryPerTable.add(String.format("SELECT MAX(_sequence_num) as max_sequence_num FROM %s",
+                                                      wrapInBackTick(tableId.getDataset(), tableId.getTable())));
       }
     }
 
@@ -93,7 +94,8 @@ public final class BigQueryUtils {
       return 0L;
     }
 
-    String query = String.format("SELECT MAX(_sequence_num) FROM %s.%s", tableId.getDataset(), tableId.getTable());
+    String query = String.format("SELECT MAX(_sequence_num) FROM %s",
+                                 wrapInBackTick(tableId.getDataset(), tableId.getTable()));
     return executeAggregateQuery(bigQuery, query, encryptionConfig);
   }
 
@@ -138,5 +140,9 @@ public final class BigQueryUtils {
       name = name.substring(0, MAX_LENGTH);
     }
     return name;
+  }
+
+  static String wrapInBackTick(String datasetName, String tableName) {
+    return BACKTICK + datasetName + "." + tableName + BACKTICK;
   }
 }
