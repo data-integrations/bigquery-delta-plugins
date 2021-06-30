@@ -92,7 +92,8 @@ public class BigQueryEventConsumerTest {
     Schema.Field.of("name", Schema.of(Schema.Type.STRING)),
     Schema.Field.of("created", Schema.of(Schema.LogicalType.TIMESTAMP_MILLIS)),
     Schema.Field.of("bday", Schema.of(Schema.LogicalType.DATE)),
-    Schema.Field.of("score", Schema.nullableOf(Schema.of(Schema.Type.DOUBLE))));
+    Schema.Field.of("score", Schema.nullableOf(Schema.of(Schema.Type.DOUBLE))),
+    Schema.Field.of("partition", Schema.nullableOf(Schema.of(Schema.Type.INT))));
 
   private static Storage storage;
   private static BigQuery bigQuery;
@@ -395,7 +396,8 @@ public class BigQueryEventConsumerTest {
                         Schema.Field.of("bday", Schema.nullableOf(Schema.of(Schema.LogicalType.DATE))),
                         // add a new nullable age field
                         Schema.Field.of("age", Schema.nullableOf(Schema.of(Schema.Type.INT))),
-                        Schema.Field.of("score", Schema.nullableOf(Schema.of(Schema.Type.DOUBLE))));
+                        Schema.Field.of("score", Schema.nullableOf(Schema.of(Schema.Type.DOUBLE))),
+                        Schema.Field.of("partition", Schema.nullableOf(Schema.of(Schema.Type.INT))));
       DDLEvent alterEvent = DDLEvent.builder()
         .setOperation(DDLOperation.Type.ALTER_TABLE)
         .setDatabaseName(dataset)
@@ -420,6 +422,8 @@ public class BigQueryEventConsumerTest {
       Assert.assertEquals(Field.Mode.NULLABLE, bqFields.get("age").getMode());
       Assert.assertEquals(LegacySQLTypeName.FLOAT, bqFields.get("score").getType());
       Assert.assertEquals(Field.Mode.NULLABLE, bqFields.get("score").getMode());
+      Assert.assertEquals(LegacySQLTypeName.INTEGER, bqFields.get("partition").getType());
+      Assert.assertEquals(Field.Mode.NULLABLE, bqFields.get("partition").getMode());
     } finally {
       cleanupTest(bucket, dataset, eventConsumer);
     }
@@ -480,6 +484,7 @@ public class BigQueryEventConsumerTest {
       .setTimestamp("created", ZonedDateTime.ofInstant(Instant.EPOCH, ZoneId.of("UTC")))
       .setDate("bday", LocalDate.ofEpochDay(0))
       .set("score", 0.0d)
+      .set("partition", 1)
       .build();
     for (String tableName : tableNames) {
       DMLEvent insert1Event = DMLEvent.builder()
@@ -528,12 +533,14 @@ public class BigQueryEventConsumerTest {
       Assert.assertEquals(0L, row.get("created").getTimestampValue());
       Assert.assertEquals("1970-01-01", row.get("bday").getStringValue());
       Assert.assertEquals(0.0d, row.get("score").getDoubleValue(), 0.000001d);
+      Assert.assertEquals(1, row.get("partition").getLongValue());
       row = iter.next();
       Assert.assertEquals(1L, row.get("id").getLongValue());
       Assert.assertEquals("bob", row.get("name").getStringValue());
       Assert.assertEquals(TimeUnit.SECONDS.toMicros(86400), row.get("created").getTimestampValue());
       Assert.assertEquals("1970-01-02", row.get("bday").getStringValue());
       Assert.assertEquals(1.0d, row.get("score").getDoubleValue(), 0.000001d);
+      Assert.assertTrue(row.get("partition").isNull());
       // staging table should be cleaned up
       Assert.assertNull(bigQuery.getTable(TableId.of(dataset, STAGING_TABLE_PREFIX + tableName)));
     }
@@ -544,6 +551,7 @@ public class BigQueryEventConsumerTest {
       .setTimestamp("created", insert1.getTimestamp("created"))
       .setDate("bday", insert1.getDate("bday"))
       .set("score", insert1.get("score"))
+      .set("partition", insert1.get("partition"))
       .build();
     for (String tableName : tableNames) {
       DMLEvent updateEvent = DMLEvent.builder()
@@ -581,6 +589,7 @@ public class BigQueryEventConsumerTest {
       Assert.assertEquals(0L, row.get("created").getTimestampValue());
       Assert.assertEquals("1970-01-01", row.get("bday").getStringValue());
       Assert.assertEquals(0.0d, row.get("score").getDoubleValue(), 0.000001d);
+      Assert.assertEquals(1L, row.get("partition").getLongValue());
       // staging table should be cleaned up
       Assert.assertNull(bigQuery.getTable(TableId.of(dataset, STAGING_TABLE_PREFIX + tableName)));
     }
