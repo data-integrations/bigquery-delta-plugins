@@ -976,7 +976,8 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   static String createDiffQuery(TableId stagingTable, List<String> primaryKeys, long batchId,
-    Long latestSequenceNumInTargetTable, boolean sourceRowIdSupported, SourceProperties.Ordering sourceEventsOrdering) {
+                                Long latestSequenceNumInTargetTable, boolean sourceRowIdSupported,
+                                SourceProperties.Ordering sourceEventsOrdering) {
     String joinCondition;
     String whereClause;
     /*
@@ -1013,11 +1014,11 @@ public class BigQueryEventConsumer implements EventConsumer {
       whereClause = " B._row_id IS NULL ";
     } else {
       joinCondition = primaryKeys.stream()
-        .map(name -> String.format("A.%s = B._before_%s", name, name))
+        .map(name -> String.format("A.`%s` = B.`_before_%s`", name, name))
         .collect(Collectors.joining(" AND "));
 
       whereClause = primaryKeys.stream()
-        .map(name -> String.format("B._before_%s IS NULL", name))
+        .map(name -> String.format("B.`_before_%s` IS NULL", name))
         .collect(Collectors.joining(" AND "));
     }
 
@@ -1029,11 +1030,11 @@ public class BigQueryEventConsumer implements EventConsumer {
         Constants.SOURCE_TIMESTAMP, Constants.SEQUENCE_NUM);
     }
     return "SELECT A.* FROM\n" +
-      "(SELECT * FROM " + stagingTable.getDataset() + "." + stagingTable.getTable() +
+      "(SELECT * FROM " + BigQueryUtils.wrapInBackTick(stagingTable.getDataset(), stagingTable.getTable()) +
       " WHERE _batch_id = " + batchId +
       " AND _sequence_num > " + latestSequenceNumInTargetTable + ") as A\n" +
       "LEFT OUTER JOIN\n" +
-      "(SELECT * FROM " + stagingTable.getDataset() + "." + stagingTable.getTable() +
+      "(SELECT * FROM " + BigQueryUtils.wrapInBackTick(stagingTable.getDataset(), stagingTable.getTable()) +
       " WHERE _batch_id = " + batchId +
       " AND _sequence_num > " + latestSequenceNumInTargetTable + ") as B\n" +
       "ON " + joinCondition +
@@ -1100,7 +1101,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     } else {
       // if source doesn't support row Id, we use primary keys to match the row
       mergeCondition = primaryKeys.stream()
-        .map(name -> String.format("T.%s = D._before_%s", name, name))
+        .map(name -> String.format("T.`%s` = D.`_before_%s`", name, name))
         .collect(Collectors.joining(" AND "));
 
     }
@@ -1149,7 +1150,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
 
     String mergeQuery = "MERGE " +
-      targetTableId.getDataset() + "." + targetTableId.getTable() + " as T\n" +
+      BigQueryUtils.wrapInBackTick(targetTableId.getDataset(), targetTableId.getTable()) + " as T\n" +
       "USING (" + diffQuery + ") as D\n" +
       "ON " + mergeCondition + "\n" +
       "WHEN MATCHED AND D._op = \"DELETE\" " + updateAndDeleteCondition + "THEN\n" +
@@ -1164,7 +1165,7 @@ public class BigQueryEventConsumer implements EventConsumer {
       targetSchema.getFields().stream()
         .filter(predicate)
         .map(Schema.Field::getName)
-        .map(name -> String.format("%s = D.%s", name, name))
+        .map(name -> String.format("`%s` = D.`%s`", name, name))
         // explicitly set "_is_deleted" to null for the case when this row was previously deleted and the
         // "_is_deleted" column was set to "true" and now a new insert is to insert the same row , we need to
         // reset "_is_deleted" back to null.
@@ -1173,12 +1174,12 @@ public class BigQueryEventConsumer implements EventConsumer {
       "  INSERT (" +
       targetSchema.getFields().stream()
         .filter(predicate)
-        .map(Schema.Field::getName)
+        .map(field -> BigQueryUtils.BACKTICK + field.getName() + BigQueryUtils.BACKTICK)
         .collect(Collectors.joining(", ")) +
       ") VALUES (" +
       targetSchema.getFields().stream()
         .filter(predicate)
-        .map(Schema.Field::getName)
+        .map(field -> BigQueryUtils.BACKTICK + field.getName() + BigQueryUtils.BACKTICK)
         .collect(Collectors.joining(", ")) + ")";
 
     if (sourceEventOrdering == SourceProperties.Ordering.UN_ORDERED) {
@@ -1186,16 +1187,15 @@ public class BigQueryEventConsumer implements EventConsumer {
         "  INSERT (" +
         targetSchema.getFields().stream()
           .filter(predicate)
-          .map(Schema.Field::getName)
+          .map(field -> BigQueryUtils.BACKTICK + field.getName() + BigQueryUtils.BACKTICK)
           .collect(Collectors.joining(", ")) +
         ", " + Constants.IS_DELETED + ") VALUES (" +
         targetSchema.getFields().stream()
           .filter(predicate)
-          .map(Schema.Field::getName)
+          .map(field -> BigQueryUtils.BACKTICK + field.getName() + BigQueryUtils.BACKTICK)
           .collect(Collectors.joining(", ")) + ", true)";
     }
     return mergeQuery;
-
   }
 
   private void runWithRetries(ContextualRunnable runnable, long retryDelay, String dataset, String schema, String table,
