@@ -61,8 +61,7 @@ public final class BigQueryUtils {
    * missing '_sequence_num' column in any of the tables, exception will be thrown.
    */
   static long getMaximumExistingSequenceNumber(Set<SourceTable> allTables, String project, @Nullable String datasetName,
-                                               BigQuery bigQuery, EncryptionConfiguration encryptionConfiguration,
-                                               int splitBatchSize) {
+                                               BigQuery bigQuery, EncryptionConfiguration encryptionConfiguration) {
     List<String> maxSequenceNumQueryPerTable = new ArrayList<>();
     for (SourceTable table : allTables) {
       TableId tableId = TableId.of(project, datasetName != null ? normalizeDatasetOrTableName(datasetName) :
@@ -77,11 +76,11 @@ public final class BigQueryUtils {
     long maxSequenceNumber = 0;
     int start = 0;
     while (start <= maxSequenceNumQueryPerTable.size()) {
-      int end = Math.min(start + splitBatchSize, maxSequenceNumQueryPerTable.size());
+      int end = Math.min(start + 1000, maxSequenceNumQueryPerTable.size());
       long batchMaxSeqNum = triggerMaxSequenceNumExecution(bigQuery, maxSequenceNumQueryPerTable.subList(start, end),
                                                            encryptionConfiguration);
       maxSequenceNumber = Math.max(maxSequenceNumber, batchMaxSeqNum);
-      start += splitBatchSize;
+      start += 1000;
     }
 
     return maxSequenceNumber;

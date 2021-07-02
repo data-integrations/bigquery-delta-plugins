@@ -64,7 +64,6 @@ public class BigQueryTarget implements DeltaTarget {
   public static final int CONFLICT = 409;
   private static final String GCS_SCHEME = "gs://";
   private static final String GCP_CMEK_KEY_NAME = "gcp.cmek.key.name";
-  private static final int MAX_BIG_QUERY_BATCH_SZE = 1000;
   private final Conf conf;
 
   @SuppressWarnings("unused")
@@ -95,8 +94,7 @@ public class BigQueryTarget implements DeltaTarget {
 
     long maximumExistingSequenceNumber = BigQueryUtils.getMaximumExistingSequenceNumber(context.getAllTables(), project,
                                                                                         conf.getDatasetName(), bigQuery,
-                                                                                        encryptionConfig,
-                                                                                        MAX_BIG_QUERY_BATCH_SZE);
+                                                                                        encryptionConfig);
 
     LOG.info("Found maximum sequence number {}", maximumExistingSequenceNumber);
 
