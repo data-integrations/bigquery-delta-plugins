@@ -59,8 +59,8 @@ import static org.junit.Assert.assertEquals;
 import static org.mockito.Mockito.times;
 
 /**
- * Tests for BigQueryUtils. For tests in "BigQueryGCPDependentTests"  service account credentials must be set in the system
- * properties. The service account must have permission to create and write to BigQuery datasets and tables.
+ * Tests for BigQueryUtils. For tests in "BigQueryGCPDependentTests"  service account credentials must be set in the
+ * system properties. The service account must have permission to create and write to BigQuery datasets and tables.
  *
  * The tests create real resources in GCP and will cost some small amount of money for each run.
  */
@@ -135,7 +135,7 @@ public class BigQueryUtilsTest {
     public void testGetMaximumExistingSequenceNumberZeroInvocations() throws Exception {
       // Zero Tables
       Set<SourceTable> allTables = generateSourceTableSet(0);
-      long tableResult0 = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, "testproject",
+      long tableResult0 = BigQueryUtils.getMaximumExistingSequenceNumberBatchSpliter(allTables, "testproject",
                                                                          null, bigQueryMock, null, 1000);
       assertEquals(0L, tableResult0);
       PowerMockito.verifyPrivate(BigQueryUtils.class, times(0))
@@ -149,7 +149,7 @@ public class BigQueryUtilsTest {
 
       // Subtest : One Table
       Set<SourceTable> allTables = generateSourceTableSet(1);
-      long tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, "testproject",
+      long tableResult = BigQueryUtils.getMaximumExistingSequenceNumberBatchSpliter(allTables, "testproject",
                                                                         null, bigQueryMock, null, 1000);
       assertEquals(1L, tableResult);
       PowerMockito.verifyPrivate(BigQueryUtils.class, times(1))
@@ -158,7 +158,7 @@ public class BigQueryUtilsTest {
 
       // Subtest2 : Ten Tables
       allTables = generateSourceTableSet(10);
-      tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, "testproject",
+      tableResult = BigQueryUtils.getMaximumExistingSequenceNumberBatchSpliter(allTables, "testproject",
                                                                    null, bigQueryMock, null, 1000);
       assertEquals(2L, tableResult);
       PowerMockito.verifyPrivate(BigQueryUtils.class, times(2))
@@ -167,7 +167,7 @@ public class BigQueryUtilsTest {
 
       // Subtest3 : 1000 Tables
       allTables = generateSourceTableSet(1000);
-      tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, "testproject",
+      tableResult = BigQueryUtils.getMaximumExistingSequenceNumberBatchSpliter(allTables, "testproject",
                                                                    null, bigQueryMock, null, 1000);
       assertEquals(3L, tableResult);
       PowerMockito.verifyPrivate(BigQueryUtils.class, times(3))
@@ -181,7 +181,7 @@ public class BigQueryUtilsTest {
 
       //Subtest1 :  1001 Tables : Should call bigquery 2 times. 1000+1
       Set<SourceTable> allTables = generateSourceTableSet(1001);
-      long tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, "testproject",
+      long tableResult = BigQueryUtils.getMaximumExistingSequenceNumberBatchSpliter(allTables, "testproject",
                                                                         null, bigQueryMock, null, 1000);
       assertEquals(2L, tableResult);
       PowerMockito.verifyPrivate(BigQueryUtils.class, times(2))
@@ -190,7 +190,7 @@ public class BigQueryUtilsTest {
 
       //Subtest2 :  2000 Tables : Should call bigquery 2 times. 1000+1000
       allTables = generateSourceTableSet(2000);
-      tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, "testproject",
+      tableResult = BigQueryUtils.getMaximumExistingSequenceNumberBatchSpliter(allTables, "testproject",
                                                                    null, bigQueryMock, null, 1000);
       assertEquals(4L, tableResult);
       PowerMockito.verifyPrivate(BigQueryUtils.class, times(4))
@@ -204,7 +204,7 @@ public class BigQueryUtilsTest {
 
       //Subtest1 :  2500 Tables : Should call bigquery 3 times. 1000+1000+500
       Set<SourceTable> allTables = generateSourceTableSet(2500);
-      long tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, "testproject",
+      long tableResult = BigQueryUtils.getMaximumExistingSequenceNumberBatchSpliter(allTables, "testproject",
                                                                         null, bigQueryMock, null, 1000);
       assertEquals(3L, tableResult);
       PowerMockito.verifyPrivate(BigQueryUtils.class, times(3))
@@ -289,28 +289,28 @@ public class BigQueryUtilsTest {
     public void testMaximumExistingSequenceNumber() {
       //0 tables : no call
       Set<SourceTable> tables0 = generateSourceTableSet(0);
-      long tableResult0 = BigQueryUtils.getMaximumExistingSequenceNumber(tables0, project,
+      long tableResult0 = BigQueryUtils.getMaximumExistingSequenceNumberBatchSpliter(tables0, project,
                                                                          DATASET, bigQuery, null,
                                                                          MAX_BIG_QUERY_BATCH_SZE);
       assertEquals(0, tableResult0);
 
       //3 tables : 1 call
       Set<SourceTable> tables3 = generateSourceTableSet(3);
-      long tableResult3 = BigQueryUtils.getMaximumExistingSequenceNumber(tables3, project,
+      long tableResult3 = BigQueryUtils.getMaximumExistingSequenceNumberBatchSpliter(tables3, project,
                                                                          DATASET, bigQuery, null,
                                                                          MAX_BIG_QUERY_BATCH_SZE);
       assertEquals(3, tableResult3);
 
       //6 tables : 2 call
       Set<SourceTable> tables6 = generateSourceTableSet(6);
-      long tableResult6 = BigQueryUtils.getMaximumExistingSequenceNumber(tables6, project,
+      long tableResult6 = BigQueryUtils.getMaximumExistingSequenceNumberBatchSpliter(tables6, project,
                                                                          DATASET, bigQuery, null,
                                                                          MAX_BIG_QUERY_BATCH_SZE);
       assertEquals(6, tableResult6);
 
       //10 tables : 3 call
       Set<SourceTable> tables10 = generateSourceTableSet(10);
-      long tableResult10 = BigQueryUtils.getMaximumExistingSequenceNumber(tables10, project,
+      long tableResult10 = BigQueryUtils.getMaximumExistingSequenceNumberBatchSpliter(tables10, project,
                                                                           DATASET, bigQuery, null,
                                                                           MAX_BIG_QUERY_BATCH_SZE);
       assertEquals(10, tableResult10);
