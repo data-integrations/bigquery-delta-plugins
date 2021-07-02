@@ -62,6 +62,8 @@ public final class BigQueryUtils {
    */
   static long getMaximumExistingSequenceNumber(Set<SourceTable> allTables, String project, @Nullable String datasetName,
                                                BigQuery bigQuery, EncryptionConfiguration encryptionConfiguration) {
+    StringBuilder builder = new StringBuilder();
+    builder.append("SELECT MAX(max_sequence_num) FROM (");
     List<String> maxSequenceNumQueryPerTable = new ArrayList<>();
     for (SourceTable table : allTables) {
       TableId tableId = TableId.of(project, datasetName != null ? normalizeDatasetOrTableName(datasetName) :
@@ -72,24 +74,6 @@ public final class BigQueryUtils {
       }
     }
 
-    //BQ supports querying max of 1000 tables , hence splitting the queries in batches of 1000
-    long maxSequenceNumber = 0;
-    int start = 0;
-    while (start <= maxSequenceNumQueryPerTable.size()) {
-      int end = Math.min(start + 1000, maxSequenceNumQueryPerTable.size());
-      long batchMaxSeqNum = triggerMaxSequenceNumExecution(bigQuery, maxSequenceNumQueryPerTable.subList(start, end),
-                                                           encryptionConfiguration);
-      maxSequenceNumber = Math.max(maxSequenceNumber, batchMaxSeqNum);
-      start += 1000;
-    }
-
-    return maxSequenceNumber;
-  }
-
-  private static long triggerMaxSequenceNumExecution(BigQuery bigQuery, List<String> maxSequenceNumQueryPerTable,
-                                                     EncryptionConfiguration encryptionConfiguration) {
-    StringBuilder builder = new StringBuilder();
-    builder.append("SELECT MAX(max_sequence_num) FROM (");
     builder.append(String.join(" UNION ALL ", maxSequenceNumQueryPerTable));
     builder.append(");");
 
