@@ -52,9 +52,9 @@ public class BigQueryUtilsTest {
     PowerMockito.spy(BigQueryUtils.class);
 
     //Stubs
-    PowerMockito.doReturn(1L, 2L, 3L, 4L)
+    PowerMockito.doReturn(1L,2L,3L,4L)
       .when(BigQueryUtils.class, "executeAggregateQuery",
-            ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
+            ArgumentMatchers.eq(bigQueryMock),ArgumentMatchers.any(),ArgumentMatchers.any());
   }
 
   @Test
@@ -107,8 +107,7 @@ public class BigQueryUtilsTest {
                                                                        null, bigQueryMock, null);
     assertEquals(0L, tableResult0);
     PowerMockito.verifyPrivate(BigQueryUtils.class, times(0))
-      .invoke("executeAggregateQuery",
-              ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
+      .invoke("executeAggregateQuery", ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
 
   }
 
@@ -121,8 +120,7 @@ public class BigQueryUtilsTest {
                                                                       null, bigQueryMock, null);
     assertEquals(1L, tableResult);
     PowerMockito.verifyPrivate(BigQueryUtils.class, times(1))
-      .invoke("executeAggregateQuery",
-              ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
+      .invoke("executeAggregateQuery", ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
 
     // Subtest2 : Ten Tables
     allTables = generateSourceTableSet(10);
@@ -130,8 +128,7 @@ public class BigQueryUtilsTest {
                                                                  null, bigQueryMock, null);
     assertEquals(2L, tableResult);
     PowerMockito.verifyPrivate(BigQueryUtils.class, times(2))
-      .invoke("executeAggregateQuery",
-              ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
+      .invoke("executeAggregateQuery", ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
 
     // Subtest3 : 1000 Tables
     allTables = generateSourceTableSet(1000);
@@ -139,8 +136,7 @@ public class BigQueryUtilsTest {
                                                                  null, bigQueryMock, null);
     assertEquals(3L, tableResult);
     PowerMockito.verifyPrivate(BigQueryUtils.class, times(3))
-      .invoke("executeAggregateQuery",
-              ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
+      .invoke("executeAggregateQuery", ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
 
   }
 
@@ -153,8 +149,7 @@ public class BigQueryUtilsTest {
                                                                       null, bigQueryMock, null);
     assertEquals(2L, tableResult);
     PowerMockito.verifyPrivate(BigQueryUtils.class, times(2))
-      .invoke("executeAggregateQuery",
-              ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
+      .invoke("executeAggregateQuery", ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
 
     //Subtest2 :  2000 Tables : Should call bigquery 2 times. 1000+1000
     allTables = generateSourceTableSet(2000);
@@ -162,8 +157,7 @@ public class BigQueryUtilsTest {
                                                                  null, bigQueryMock, null);
     assertEquals(4L, tableResult);
     PowerMockito.verifyPrivate(BigQueryUtils.class, times(4))
-      .invoke("executeAggregateQuery",
-              ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
+      .invoke("executeAggregateQuery", ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
 
   }
 
@@ -176,8 +170,7 @@ public class BigQueryUtilsTest {
                                                                       null, bigQueryMock, null);
     assertEquals(3L, tableResult);
     PowerMockito.verifyPrivate(BigQueryUtils.class, times(3))
-      .invoke("executeAggregateQuery",
-              ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
+      .invoke("executeAggregateQuery", ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
 
   }
 
