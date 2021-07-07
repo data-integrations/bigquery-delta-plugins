@@ -643,7 +643,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     LOG.debug("Direct loading batch {} into target table {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
     TableId targetTableId = TableId.of(project, blob.getDataset(), blob.getTable());
     long retryDelay = Math.min(91, context.getMaxRetrySeconds()) - 1;
-    runWithRetries(runContext -> loadTable(targetTableId, blob, runContext.getAttemptCount()),
+    runWithRetries(runContext -> loadTable(targetTableId, blob, true, runContext.getAttemptCount()),
                    retryDelay,
                    blob.getDataset(),
                    blob.getSourceDbSchemaName(),
@@ -666,7 +666,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     String normalizedStagingTableName = BigQueryUtils.normalizeDatasetOrTableName(stagingTablePrefix + blob.getTable());
     TableId stagingTableId = TableId.of(project, blob.getDataset(), normalizedStagingTableName);
     long retryDelay = Math.min(91, context.getMaxRetrySeconds()) - 1;
-    runWithRetries(runContext -> loadTable(stagingTableId, blob, runContext.getAttemptCount()),
+    runWithRetries(runContext -> loadTable(stagingTableId, blob, false, runContext.getAttemptCount()),
                    retryDelay,
                    blob.getDataset(),
                    blob.getSourceDbSchemaName(),
@@ -700,7 +700,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
   }
 
-  private void loadTable(TableId tableId, TableBlob blob, int attemptNumber)
+  private void loadTable(TableId tableId, TableBlob blob, boolean directLoadToTarget, int attemptNumber)
     throws InterruptedException, IOException, DeltaFailureException {
     LOG.info("Loading batch {} of {} events into staging table for {}.{}", blob.getBatchId(), blob.getNumEvents(),
              blob.getDataset(), blob.getTable());
@@ -733,8 +733,13 @@ public class BigQueryEventConsumer implements EventConsumer {
       .build();
     BlobId blobId = blob.getBlob().getBlobId();
     String uri = String.format("gs://%s/%s", blobId.getBucket(), blobId.getName());
+
+    // Explicitly set schema for load jobs 
+    com.google.cloud.bigquery.Schema bqSchema
+      = Schemas.convert(directLoadToTarget ? blob.getTargetSchema() : blob.getStagingSchema());
     LoadJobConfiguration.Builder jobConfigBuilder = LoadJobConfiguration.newBuilder(tableId, uri)
-      .setFormatOptions(FormatOptions.avro());
+      .setFormatOptions(FormatOptions.avro())
+      .setSchema(bqSchema);
     if (encryptionConfig != null) {
       jobConfigBuilder.setDestinationEncryptionConfiguration(encryptionConfig);
     }
@@ -746,7 +751,16 @@ public class BigQueryEventConsumer implements EventConsumer {
       .setJobId(jobId)
       .build();
     Job loadJob = bigQuery.create(jobInfo);
-    loadJob.waitFor();
+    Job completedJob = loadJob.waitFor();
+    if (completedJob == null) {
+      // should not happen since we just submitted the job
+      throw new IOException("Load job no longer exists. Will be retried till retry timeout is reached.");
+    }
+    if (completedJob.getStatus().getError() != null) {
+      // load job failed
+      throw new IOException(String.format("Failed to execute BigQuery load job: %s",
+                                          completedJob.getStatus().getError()));
+    }
     if (LOG.isDebugEnabled()) {
       LOG.debug("Loaded batch {} into staging table for {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
     }
@@ -962,7 +976,16 @@ public class BigQueryEventConsumer implements EventConsumer {
       .setJobId(jobId)
       .build();
     Job mergeJob = bigQuery.create(jobInfo);
-    mergeJob.waitFor();
+    Job completedJob = mergeJob.waitFor();
+    if (completedJob == null) {
+      // should not happen since we just submitted the job
+      throw new IOException("Merge query job no longer exists. Will be retried till retry timeout is reached.");
+    }
+    if (completedJob.getStatus().getError() != null) {
+      // merge job failed
+      throw new IOException(String.format("Failed to execute BigQuery merge query job: %s",
+                                          completedJob.getStatus().getError()));
+    }
     if (LOG.isDebugEnabled()) {
       LOG.debug("Merged batch {} into {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
     }
