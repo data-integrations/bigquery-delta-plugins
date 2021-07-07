@@ -48,7 +48,7 @@ public class Schemas {
       Schema.LogicalType logicalType = fieldSchema.getLogicalType();
       Field.Mode fieldMode = isNullable ? Field.Mode.NULLABLE : Field.Mode.REQUIRED;
       if (logicalType != null) {
-        StandardSQLTypeName bqType = convertLogicalType(logicalType);
+        StandardSQLTypeName bqType = convertLogicalType(fieldSchema);
         // TODO: figure out what the correct behavior should be
         if (bqType == null) {
           throw new IllegalArgumentException(
@@ -108,7 +108,11 @@ public class Schemas {
   }
 
   @Nullable
-  private static StandardSQLTypeName convertLogicalType(Schema.LogicalType logicalType) {
+  private static StandardSQLTypeName convertLogicalType(Schema fieldSchema) {
+    Schema.LogicalType logicalType = fieldSchema.getLogicalType();
+    if (logicalType == null) {
+      return null;
+    }
     switch (logicalType) {
       case TIME_MICROS:
       case TIME_MILLIS:
@@ -119,7 +123,12 @@ public class Schemas {
       case DATE:
         return StandardSQLTypeName.DATE;
       case DECIMAL:
-        return StandardSQLTypeName.NUMERIC;
+        int precision = fieldSchema.getPrecision();
+        int scale = fieldSchema.getScale();
+        if (precision <= 38 && scale <= 9) {
+          return StandardSQLTypeName.NUMERIC;
+        }
+        return StandardSQLTypeName.BIGNUMERIC;
       case DATETIME:
         return StandardSQLTypeName.DATETIME;
     }

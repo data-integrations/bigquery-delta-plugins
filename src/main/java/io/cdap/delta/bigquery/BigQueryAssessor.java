@@ -137,7 +137,12 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
     if (logicalType != null) {
       switch (logicalType) {
         case DECIMAL:
-          return StandardSQLTypeName.NUMERIC.name();
+          int precision = schema.getPrecision();
+          int scale = schema.getScale();
+          if (precision <= 38 && scale <= 9) {
+            return StandardSQLTypeName.NUMERIC.name();
+          }
+          return StandardSQLTypeName.BIGNUMERIC.name();
         case DATE:
           return StandardSQLTypeName.DATE.name();
         case TIME_MICROS:
