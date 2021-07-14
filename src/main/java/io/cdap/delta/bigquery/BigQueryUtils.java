@@ -26,6 +26,8 @@ import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableResult;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.Sets;
 import io.cdap.cdap.api.data.format.StructuredRecord;
 import io.cdap.cdap.api.data.schema.Schema;
 import io.cdap.delta.api.DMLEvent;
@@ -33,6 +35,7 @@ import io.cdap.delta.api.SourceTable;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -55,13 +58,36 @@ public final class BigQueryUtils {
   private BigQueryUtils() {
   }
 
+  static long getMaximumExistingSequenceNumber(Set<SourceTable> allTables, String project,
+                                               @Nullable String datasetName, BigQuery bigQuery,
+                                               EncryptionConfiguration encryptionConfiguration,
+                                               int maxTablesPerQuery) {
+
+    Set<SourceTable> allRemainingTables = allTables;
+    long maxExisting = 0;
+    while (allRemainingTables.size() > 0) {
+      // select <maxTablesPerQuery> tables from all tables
+      HashSet<SourceTable> currentBatch = Sets.newHashSet(Iterables.limit(allRemainingTables, maxTablesPerQuery));
+      // find max among those <maxTablesPerQuery> tables
+      long currentMax = BigQueryUtils.getMaximumExistingSequenceNumberPerBatch(currentBatch, project,
+                                                                       datasetName, bigQuery,
+                                                                       encryptionConfiguration);
+      maxExisting = Math.max(maxExisting, currentMax);
+      // remove current batch of tables from all tables.
+      allRemainingTables = Sets.difference(allRemainingTables, currentBatch);
+    }
+
+    return maxExisting;
+  }
+
   /**
    * Get the maximum existing sequence number from all tables in the target dataset which are selected for replication.
    * If those tables do not exists '0' is returned. If the target table exists but query fails possibly because of the
    * missing '_sequence_num' column in any of the tables, exception will be thrown.
    */
-  static long getMaximumExistingSequenceNumber(Set<SourceTable> allTables, String project, @Nullable String datasetName,
-                                               BigQuery bigQuery, EncryptionConfiguration encryptionConfiguration) {
+  static long getMaximumExistingSequenceNumberPerBatch(Set<SourceTable> allTables, String project,
+                                                       @Nullable String datasetName, BigQuery bigQuery,
+                                                       EncryptionConfiguration encryptionConfiguration) {
     StringBuilder builder = new StringBuilder();
     builder.append("SELECT MAX(max_sequence_num) FROM (");
     List<String> maxSequenceNumQueryPerTable = new ArrayList<>();
