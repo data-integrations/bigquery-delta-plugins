@@ -140,7 +140,7 @@ public final class StructuredRecordToJson {
             Objects.requireNonNull(getZonedDateTime((long) object, TimeUnit.MICROSECONDS))));
           break;
         case DECIMAL:
-          writer.value(Objects.requireNonNull(getDecimal(name, (byte[]) object, schema)).toPlainString());
+          writer.value(Objects.requireNonNull(getDecimal((byte[]) object, schema)).toPlainString());
           break;
         case DATETIME:
           //datetime should be already an ISO-8601 string
@@ -270,16 +270,9 @@ public final class StructuredRecordToJson {
     return ZonedDateTime.ofInstant(instant, ZoneId.ofOffset("UTC", ZoneOffset.UTC));
   }
 
-  private static BigDecimal getDecimal(String name, byte[] value, Schema schema) {
+  private static BigDecimal getDecimal(byte[] value, Schema schema) {
     int scale = schema.getScale();
-    BigDecimal decimal = new BigDecimal(new BigInteger(value), scale);
-    if (decimal.precision() > 38 || decimal.scale() > 9) {
-      throw new IllegalArgumentException(
-        String.format("Numeric Field '%s' has invalid precision '%s' and scale '%s'. " +
-                        "Precision must be at most 38 and scale must be at most 9.",
-                      name, decimal.precision(), decimal.scale()));
-    }
-    return decimal;
+    return new BigDecimal(new BigInteger(value), scale);
   }
 
   /**
