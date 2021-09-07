@@ -746,6 +746,7 @@ public class BigQueryEventConsumer implements EventConsumer {
       = Schemas.convert(directLoadToTarget ? blob.getTargetSchema() : blob.getStagingSchema());
     LoadJobConfiguration.Builder jobConfigBuilder = LoadJobConfiguration.newBuilder(tableId, uri)
       .setFormatOptions(FormatOptions.avro())
+      .setUseAvroLogicalTypes(true)
       .setSchema(bqSchema);
     if (encryptionConfig != null) {
       jobConfigBuilder.setDestinationEncryptionConfiguration(encryptionConfig);
