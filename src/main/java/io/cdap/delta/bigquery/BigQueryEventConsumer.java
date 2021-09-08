@@ -745,14 +745,15 @@ public class BigQueryEventConsumer implements EventConsumer {
     com.google.cloud.bigquery.Schema bqSchema
       = Schemas.convert(directLoadToTarget ? blob.getTargetSchema() : blob.getStagingSchema());
     LoadJobConfiguration.Builder jobConfigBuilder = LoadJobConfiguration.newBuilder(tableId, uri)
-      .setFormatOptions(FormatOptions.avro())
-      .setUseAvroLogicalTypes(true)
       .setSchema(bqSchema);
     if (encryptionConfig != null) {
       jobConfigBuilder.setDestinationEncryptionConfiguration(encryptionConfig);
     }
     if (blob.isJsonFormat()) {
       jobConfigBuilder.setFormatOptions(FormatOptions.json());
+    } else {
+      jobConfigBuilder.setFormatOptions(FormatOptions.avro());
+      jobConfigBuilder.setUseAvroLogicalTypes(true);
     }
     LoadJobConfiguration loadJobConf = jobConfigBuilder.build();
     JobInfo jobInfo = JobInfo.newBuilder(loadJobConf)
