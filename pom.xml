@@ -57,7 +57,7 @@
     <avro.version>1.8.2</avro.version>
     <bigquery.version>1.133.1</bigquery.version>
     <cdap.version>6.4.0</cdap.version>
-    <delta.version>0.4.0-SNAPSHOT</delta.version>
+    <delta.version>0.5.0-SNAPSHOT</delta.version>
     <failsafe.version>2.3.3</failsafe.version>
     <gcs.version>1.78.0</gcs.version>
     <logback.version>1.2.3</logback.version>
