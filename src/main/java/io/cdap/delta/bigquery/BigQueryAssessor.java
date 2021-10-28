@@ -107,15 +107,18 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
     String normalizedTableName = BigQueryUtils.normalizeDatasetOrTableName(tableName);
     String normalizedStagingTableName = BigQueryUtils.normalizeDatasetOrTableName(stagingTableName);
     if (!datasetName.equals(normalizedDatasetName)) {
+      //such problem should not prevent draft to be deployed
       problems.add(
         new Problem("Normalizing Database Name",
                     String.format("Dataset '%s' will be normalized to '%s' to meet BigQuery's dataset name " +
                                     "requirements.", datasetName, normalizedDatasetName),
                     "Verify that multiple dataset will not be normalized to the same BigQuery dataset name",
-                    "If multiple datasets are normalized to the same name, conflicts can occur"));
+                    "If multiple datasets are normalized to the same name, conflicts can occur",
+                    Problem.Severity.WARNING));
     }
 
     if (!tableName.equals(normalizedTableName) || !stagingTableName.equals(normalizedStagingTableName)) {
+      //such problem should not prevent draft to be deployed
       problems.add(
         new Problem("Normalizing Table Name",
                     String.format("Table '%s' will be normalized to '%s' and the staging table will be normalized " +
@@ -123,7 +126,8 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
                                   tableName, normalizedTableName, normalizedStagingTableName),
                     "Verify that multiple tables will not be normalized to the same BigQuery table name " +
                       "under the same dataset",
-                    "If multiple tables are normalized to the same name, conflicts can occur."));
+                    "If multiple tables are normalized to the same name, conflicts can occur.",
+                    Problem.Severity.WARNING));
     }
 
     return new TableAssessment(columnAssessments, problems);
@@ -144,6 +148,8 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
           return StandardSQLTypeName.BIGNUMERIC.name();
         case DATE:
           return StandardSQLTypeName.DATE.name();
+        case DATETIME:
+          return StandardSQLTypeName.DATETIME.name();
         case TIME_MICROS:
         case TIME_MILLIS:
           return StandardSQLTypeName.TIME.name();
