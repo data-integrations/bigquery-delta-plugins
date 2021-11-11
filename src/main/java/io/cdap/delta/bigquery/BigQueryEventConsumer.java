@@ -640,7 +640,8 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   private void directLoadToTarget(TableBlob blob) throws Exception {
-    LOG.debug("Direct loading batch {} into target table {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
+    LOG.debug("Direct loading batch {} of {} events into target table {}.{}", blob.getBatchId(), blob.getNumEvents(),
+              blob.getDataset(), blob.getTable());
     TableId targetTableId = TableId.of(project, blob.getDataset(), blob.getTable());
     long retryDelay = Math.min(91, context.getMaxRetrySeconds()) - 1;
     runWithRetries(runContext -> loadTable(targetTableId, blob, true, runContext.getAttemptCount()),
@@ -658,8 +659,8 @@ public class BigQueryEventConsumer implements EventConsumer {
       LOG.warn("Failed to delete temporary GCS object {} in bucket {}. The object will need to be manually deleted.",
                blob.getBlob().getBlobId().getName(), blob.getBlob().getBlobId().getBucket(), e);
     }
-    LOG.debug("Direct loading of batch {} into target table {}.{} done", blob.getBatchId(), blob.getDataset(),
-              blob.getTable());
+    LOG.debug("Direct loading of batch {} of {} events into target table {}.{} done", blob.getBatchId(),
+              blob.getNumEvents(), blob.getDataset(), blob.getTable());
   }
 
   private void mergeTableChanges(TableBlob blob) throws DeltaFailureException, InterruptedException {
