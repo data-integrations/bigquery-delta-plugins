@@ -133,7 +133,7 @@ public class MultiGCSWriter {
         } catch (IOException e) {
           String errMsg = String.format("Error writing batch of %d changes for %s.%s to GCS",
                                         tableObject.numEvents, tableObject.dataset, tableObject.table);
-          context.setTableError(tableObject.dataset, tableObject.sourceDbSchemaName, tableObject.table,
+          context.setTableError(tableObject.dataset, tableObject.table,
                                 new ReplicationError(errMsg, e.getStackTrace()));
           throw new IOException(errMsg, e);
         }
