@@ -177,6 +177,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final SourceProperties.Ordering sourceEventOrdering;
   private final String datasetName;
   private final boolean retainStagingTable;
+  private boolean logOffsetCommit = true;
   private ScheduledExecutorService scheduledExecutorService;
   private ScheduledFuture<?> scheduledFlush;
   private ExecutorService executorService;
@@ -520,6 +521,12 @@ public class BigQueryEventConsumer implements EventConsumer {
             LOG.trace("Committing offset : {} and seq num: {}", latestOffset.get(), latestSequenceNum);
           }
           context.commitOffset(latestOffset, latestSequenceNum);
+          // HACK
+          if (logOffsetCommit) {
+            LOG.info("Writing committed.offset {}", GSON.toJson(latestOffset));
+            logOffsetCommit = false;
+          }
+          context.putState("committed.offset", Bytes.toBytes(GSON.toJson(latestOffset)));
         }
       });
     } catch (Exception e) {

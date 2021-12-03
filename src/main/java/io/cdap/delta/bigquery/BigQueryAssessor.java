@@ -94,12 +94,7 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
     }
     String stagingTableName = stagingTablePrefix + tableName;
     if (tableDetail.getPrimaryKey().isEmpty()) {
-      problems.add(
-        new Problem("Missing Primary Key",
-                    String.format("Table '%s' in database '%s' must have a primary key in order to be replicated",
-                                  tableName, dbName),
-                    "Please alter the table to use a primary key, or select a different table",
-                    "Not able to replicate this table to BigQuery"));
+      LOGGER.info("Table {} does not have primary keys. Ignoring the error from BQ target.", tableDetail.getTable());
     }
 
     String datasetName = this.datasetName == null ? dbName : this.datasetName;
