@@ -90,6 +90,22 @@
               "label": "False"
             }
           }
+        },
+        {
+          "name": "softDeletes",
+          "label": "Enable Soft Deletes",
+          "widget-type": "toggle",
+          "widget-attributes": {
+            "default": "false",
+            "on": {
+              "value": "true",
+              "label": "Yes"
+            },
+            "off": {
+              "value": "false",
+              "label": "No"
+            }
+          }
         }
       ]
     }

@@ -42,6 +42,7 @@ import com.google.cloud.storage.Bucket;
 import com.google.cloud.storage.BucketInfo;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.StorageOptions;
+import com.google.common.collect.ImmutableSet;
 import io.cdap.cdap.api.data.format.StructuredRecord;
 import io.cdap.cdap.api.data.schema.Schema;
 import io.cdap.delta.api.DDLEvent;
@@ -71,6 +72,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -143,7 +145,7 @@ public class BigQueryEventConsumerTest {
     runtimeArguments.put("gcp.bigquery.max.clustering.columns", "4");
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(new MockContext(300, runtimeArguments), storage,
                                                                     bigQuery, bucket, project, 0, STAGING_TABLE_PREFIX,
-                                                                    true, null, 1L, null);
+                                                                    true, null, 1L, null, false);
     String dataset = "testTableCreationWithClustering";
     String tableName = "users";
     List<String> primaryKeys = new ArrayList<>();
@@ -186,7 +188,7 @@ public class BigQueryEventConsumerTest {
     Bucket bucket = storage.create(BucketInfo.of(bucketName));
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(new MockContext(300, Collections.emptyMap()),
                                                                     storage, bigQuery, bucket, project, 0,
-                                                                    STAGING_TABLE_PREFIX, true, null, 1L, null);
+                                                                    STAGING_TABLE_PREFIX, true, null, 1L, null, false);
 
     String dataset = "testInvalidTypesForClustering";
     String allinvalidsTableName = "allinvalids";
@@ -263,7 +265,7 @@ public class BigQueryEventConsumerTest {
 
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(new MockContext(300, new HashMap()), storage,
                                                                     bigQuery, bucket, project, 0, STAGING_TABLE_PREFIX,
-                                                                    true, null, 1L, null);
+                                                                    true, null, 1L, null, false);
 
     String dataset = "testManualDropRetries";
     String tableName = "users";
@@ -307,7 +309,7 @@ public class BigQueryEventConsumerTest {
 
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(MockContext.INSTANCE, storage, bigQuery, bucket,
                                                                     project, 0, STAGING_TABLE_PREFIX, true, null, null,
-                                                                    null);
+                                                                    null, false);
 
     String dataset = "testManualDrops";
     String tableName = "users";
@@ -378,7 +380,7 @@ public class BigQueryEventConsumerTest {
 
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(MockContext.INSTANCE, storage, bigQuery, bucket,
                                                                     project, 0, STAGING_TABLE_PREFIX, false, null, null,
-                                                                    null);
+                                                                    null, false);
 
     String dataset = "testAlter";
     String tableName = "users";
@@ -436,11 +438,11 @@ public class BigQueryEventConsumerTest {
 
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(MockContext.INSTANCE, storage, bigQuery, bucket,
                                                                     project, 0, STAGING_TABLE_PREFIX, false, null, null,
-                                                                    null);
+                                                                    null, false);
 
     String dataset = "testInsertUpdateDelete";
     try {
-      insertUpdateDelete(eventConsumer, dataset);
+      insertUpdateDelete(eventConsumer, dataset, false);
     } finally {
       cleanupTest(bucket, dataset, eventConsumer);
     }
@@ -453,7 +455,7 @@ public class BigQueryEventConsumerTest {
 
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(MockContext.INSTANCE, storage, bigQuery, bucket,
                                                                     project, 0, STAGING_TABLE_PREFIX, false, null, null,
-                                                                    null);
+                                                                    null, false);
 
     String dataset = "testInsertTruncate";
     try {
@@ -463,7 +465,25 @@ public class BigQueryEventConsumerTest {
     }
   }
 
-  private void insertUpdateDelete(BigQueryEventConsumer eventConsumer, String dataset) throws Exception {
+  @Test
+  public void testSoftDeletes() throws Exception {
+    String bucketName = "bqtest-" + UUID.randomUUID().toString();
+    Bucket bucket = storage.create(BucketInfo.of(bucketName));
+
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(MockContext.INSTANCE, storage, bigQuery, bucket,
+                                                                    project, 0, STAGING_TABLE_PREFIX, false, null, null,
+                                                                    null, true);
+
+    String dataset = "testInsertUpdateSoftDelete";
+    try {
+      insertUpdateDelete(eventConsumer, dataset, true);
+    } finally {
+      cleanupTest(bucket, dataset, eventConsumer);
+    }
+  }
+
+  private void insertUpdateDelete(BigQueryEventConsumer eventConsumer, String dataset, boolean softDelete)
+    throws Exception {
     List<String> tableNames = Arrays.asList("users1", "users2", "users3");
 
     long sequenceNum = createDatasetAndTable(eventConsumer, dataset, tableNames);
@@ -582,14 +602,36 @@ public class BigQueryEventConsumerTest {
     for (String tableName : tableNames) {
       // should have just one row: 0, 'Alice', 1000L, 1970-01-01, 0.0
       TableResult result = executeQuery(String.format("SELECT * from %s.%s", dataset, tableName));
-      Assert.assertEquals(1L, result.getTotalRows());
-      FieldValueList row = result.iterateAll().iterator().next();
-      Assert.assertEquals(2L, row.get("id").getLongValue());
-      Assert.assertEquals("alice", row.get("name").getStringValue());
-      Assert.assertEquals(0L, row.get("created").getTimestampValue());
-      Assert.assertEquals("1970-01-01", row.get("bday").getStringValue());
-      Assert.assertEquals(0.0d, row.get("score").getDoubleValue(), 0.000001d);
-      Assert.assertEquals(1L, row.get("partition").getLongValue());
+
+      long expectedRows = softDelete ? 2L : 1L;
+      Assert.assertEquals(expectedRows, result.getTotalRows());
+
+      Set<String> expectedNames = ImmutableSet.of("alice", "bob");
+
+      for (FieldValueList row : result.iterateAll()) {
+        String name = row.get("name").getStringValue();
+        Assert.assertTrue(expectedNames.contains(name));
+        if (!softDelete) {
+          Assert.assertEquals("alice", name);
+        }
+
+        if (name.equals("alice")) {
+          Assert.assertEquals(2L, row.get("id").getLongValue());
+          Assert.assertEquals("alice", row.get("name").getStringValue());
+          Assert.assertEquals(0L, row.get("created").getTimestampValue());
+          Assert.assertEquals("1970-01-01", row.get("bday").getStringValue());
+          Assert.assertEquals(0.0d, row.get("score").getDoubleValue(), 0.000001d);
+          Assert.assertEquals(1L, row.get("partition").getLongValue());
+        } else if (name.equals("bob")) {
+          Assert.assertEquals(1L, row.get("id").getLongValue());
+          Assert.assertEquals("bob", row.get("name").getStringValue());
+          Assert.assertEquals("1970-01-02", row.get("bday").getStringValue());
+          Assert.assertEquals(1.0d, row.get("score").getDoubleValue(), 0.000001d);
+          Assert.assertTrue(row.get("_is_deleted").getBooleanValue());
+        } else {
+          Assert.fail("Name in the record should either be 'alice' or 'bob'.");
+        }
+      }
       // staging table should be cleaned up
       Assert.assertNull(bigQuery.getTable(TableId.of(dataset, STAGING_TABLE_PREFIX + tableName)));
     }
