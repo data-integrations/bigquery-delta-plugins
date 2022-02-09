@@ -177,6 +177,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final SourceProperties.Ordering sourceEventOrdering;
   private final String datasetName;
   private final boolean retainStagingTable;
+  private final boolean softDeletesEnabled;
   private boolean logOffsetCommit = true;
   private ScheduledExecutorService scheduledExecutorService;
   private ScheduledFuture<?> scheduledFlush;
@@ -191,7 +192,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   BigQueryEventConsumer(DeltaTargetContext context, Storage storage, BigQuery bigQuery, Bucket bucket,
                         String project, int loadIntervalSeconds, String stagingTablePrefix, boolean requireManualDrops,
                         @Nullable EncryptionConfiguration encryptionConfig, @Nullable Long baseRetryDelay,
-                        @Nullable String datasetName) {
+                        @Nullable String datasetName, boolean softDeletesEnabled) {
     this.context = context;
     this.bigQuery = bigQuery;
     this.loadIntervalSeconds = loadIntervalSeconds;
@@ -232,6 +233,7 @@ public class BigQueryEventConsumer implements EventConsumer {
       context.getSourceProperties().getOrdering();
     this.datasetName = datasetName;
     this.retainStagingTable = Boolean.parseBoolean(context.getRuntimeArguments().get(RETAIN_STAGING_TABLE));
+    this.softDeletesEnabled = softDeletesEnabled;
   }
 
   @Override
@@ -964,7 +966,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
     String mergeQuery =
       createMergeQuery(targetTableId, primaryKeys, blob.getTargetSchema(), diffQuery, sourceRowIdSupported,
-        sourceEventOrdering);
+        sourceEventOrdering, softDeletesEnabled);
     if (LOG.isTraceEnabled()) {
       LOG.trace("Merge query : {}", mergeQuery);
     }
@@ -1067,7 +1069,8 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   static String createMergeQuery(TableId targetTableId, List<String> primaryKeys, Schema targetSchema,
-    String diffQuery, boolean sourceRowIdSupported, SourceProperties.Ordering sourceEventOrdering) {
+                                 String diffQuery, boolean sourceRowIdSupported,
+                                 SourceProperties.Ordering sourceEventOrdering, boolean softDeletesEnabled) {
     String mergeCondition;
 
 
@@ -1157,13 +1160,20 @@ public class BigQueryEventConsumer implements EventConsumer {
     String updateAndDeleteCondition;
 
     if (sourceEventOrdering == SourceProperties.Ordering.ORDERED) {
-      // for ordered events we can just delete the row for DELETE event
-      deleteOperation = "  DELETE";
-      // sequence number is incremental
-      // it can decide whether it's a duplicate event, in diff query we already make sure only events with
-      // sequence number greater than the max sequence number in target table can be merged.
-      // for ordered events , they can be directly applied to the row matched
-      updateAndDeleteCondition = "";
+      if (softDeletesEnabled) {
+        // for ordered sources if soft deletes is enabled, mark the record as deleted without actually deleting it
+        deleteOperation = "  UPDATE SET " + Constants.IS_DELETED + " = true ";
+        // don't update the record with _is_deleted is set to true
+        updateAndDeleteCondition = " AND " + Constants.IS_DELETED + " IS NOT TRUE ";
+      } else {
+        // for ordered events we can just delete the row for DELETE event
+        deleteOperation = "  DELETE";
+        // sequence number is incremental
+        // it can decide whether it's a duplicate event, in diff query we already make sure only events with
+        // sequence number greater than the max sequence number in target table can be merged.
+        // for ordered events , they can be directly applied to the row matched
+        updateAndDeleteCondition = "";
+      }
     } else {
       // for unordered events
       deleteOperation = "  UPDATE SET " + Constants.IS_DELETED + " = true ";

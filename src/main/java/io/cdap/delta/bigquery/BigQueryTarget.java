@@ -152,7 +152,8 @@ public class BigQueryTarget implements DeltaTarget {
 
     return new BigQueryEventConsumer(context, storage, bigQuery, bucket, project,
                                      conf.getLoadIntervalSeconds(), conf.getStagingTablePrefix(),
-                                     conf.requiresManualDrops(), encryptionConfig, null, conf.getDatasetName());
+                                     conf.requiresManualDrops(), encryptionConfig, null, conf.getDatasetName(),
+                                     conf.softDeletesEnabled());
   }
 
   @VisibleForTesting
@@ -227,6 +228,13 @@ public class BigQueryTarget implements DeltaTarget {
     private Boolean requireManualDrops;
 
     @Nullable
+    @Description("Whether to enable soft deletes. If enabled, when the delete event is received by the target, " +
+      "'_is_deleted' column for the record will be set to true, otherwise record will be deleted from the BigQuery " +
+      "table. This configuration is no-op for the sources which generates events out of order, in which case records " +
+      "are always soft deleted from the BigQuery table.")
+    private Boolean softDeletes;
+
+    @Nullable
     @Description(
       "Optional. By default the dataset name is same as source database name. A valid name should only contain " +
         "letters, numbers, and underscores and maximum length can be 1024. Any invalid chars would be replaced with " +
@@ -258,6 +266,10 @@ public class BigQueryTarget implements DeltaTarget {
 
     public boolean requiresManualDrops() {
       return requireManualDrops == null ? false : requireManualDrops;
+    }
+
+    public boolean softDeletesEnabled() {
+      return softDeletes == null ? false : softDeletes;
     }
 
     private String getProject() {
