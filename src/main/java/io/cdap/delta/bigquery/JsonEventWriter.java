@@ -24,6 +24,7 @@ import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
+import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
 /**
@@ -33,7 +34,7 @@ public class JsonEventWriter implements EventWriter {
   private final BufferedWriter jsonWriter;
 
   JsonEventWriter(OutputStream outputStream) {
-    this.jsonWriter = new BufferedWriter(new OutputStreamWriter(outputStream));
+    this.jsonWriter = new BufferedWriter(new OutputStreamWriter(outputStream, StandardCharsets.UTF_8));
   }
 
   @Override
