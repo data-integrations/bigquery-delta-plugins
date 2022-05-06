@@ -98,8 +98,12 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
         new Problem("Missing Primary Key",
                     String.format("Table '%s' in database '%s' must have a primary key in order to be replicated",
                                   tableName, dbName),
-                    "Please alter the table to use a primary key, or select a different table",
-                    "Not able to replicate this table to BigQuery"));
+                    "Please set the property 'source.connector.custom.primary.key' = " +
+                      "`<fully-qualified table>:<a comma-separated list of columns>' in the preferences to columns " +
+                      "that can be used as an indexes. An index column is required to create a primary key in BigQuery " +
+                      "to facilitate merges, and correct handling of updates.",
+                    "Requires manual setting of a column that can be used as an index",
+                    Problem.Severity.WARNING));
     }
 
     String datasetName = this.datasetName == null ? dbName : this.datasetName;
