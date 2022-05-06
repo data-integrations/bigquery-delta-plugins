@@ -75,6 +75,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import javax.annotation.Nullable;
@@ -184,6 +185,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private Offset latestOffset;
   private long latestSequenceNum;
   private Exception flushException;
+  private final AtomicBoolean shouldStop;
   // have to keep all the records in memory in case there is a failure writing to GCS
   // cannot write to a temporary file on local disk either in case there is a failure writing to disk
   // Without keeping the entire batch in memory, there would be no way to recover the records that failed to write
@@ -233,6 +235,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     this.datasetName = datasetName;
     this.retainStagingTable = Boolean.parseBoolean(context.getRuntimeArguments().get(RETAIN_STAGING_TABLE));
     this.softDeletesEnabled = softDeletesEnabled;
+    this.shouldStop = new AtomicBoolean(false);
   }
 
   @Override
@@ -255,6 +258,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
     scheduledExecutorService.shutdownNow();
     executorService.shutdownNow();
+    shouldStop.set(true);
     try {
       scheduledExecutorService.awaitTermination(10, TimeUnit.SECONDS);
       executorService.awaitTermination(10, TimeUnit.SECONDS);
@@ -1310,6 +1314,7 @@ public class BigQueryEventConsumer implements EventConsumer {
 
   private <T> RetryPolicy<T> createBaseRetryPolicy(long baseDelay) {
     RetryPolicy<T> retryPolicy = new RetryPolicy<>();
+    retryPolicy.abortOn(f -> shouldStop.get());
     if (context.getMaxRetrySeconds() < 1) {
       return retryPolicy.withMaxAttempts(1);
     }
