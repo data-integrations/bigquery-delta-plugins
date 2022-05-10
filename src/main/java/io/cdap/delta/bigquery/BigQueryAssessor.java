@@ -100,8 +100,8 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
                                   tableName, dbName),
                     "Please set the property 'source.connector.custom.primary.key' = " +
                       "`<fully-qualified table>:<a comma-separated list of columns>' in the preferences to columns " +
-                      "that can be used as an indexes. An index column is required to create a primary key in BigQuery " +
-                      "to facilitate merges, and correct handling of updates.",
+                      "that can be used as an indexes. An index column is required to create a primary key in " +
+                      "BigQuery to facilitate merges, and correct handling of updates.",
                     "Requires manual setting of a column that can be used as an index",
                     Problem.Severity.WARNING));
     }
