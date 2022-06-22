@@ -77,6 +77,6 @@ any characters exceeds length limit will be truncated.
 Encryption key name should be of the form "projects/<gcp-project-id>/locations/<key-location>/keyRings/<key-ring-name>/cryptoKeys/<key-name>".
 
 **Enable Soft Deletes**: Determine whether to enable soft deletes. If set to true, when the delete event
-is received by the target, '_is_deleted' column for the record will be set to true, otherwise record will be deleted
+is received by the target, '_is_deleted' column for the field will be set to true, otherwise field will be deleted
  from the BigQuery table. This configuration is no-op for the sources which generates events out of order, in which
- case records are always soft deleted from the BigQuery table.
+ case fields are always soft deleted from the BigQuery table.
