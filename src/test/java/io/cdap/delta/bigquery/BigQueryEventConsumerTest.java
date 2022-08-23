@@ -482,6 +482,94 @@ public class BigQueryEventConsumerTest {
     }
   }
 
+  @Test
+  public void testBigQuerySchemaNormalization() throws Exception {
+    String bucketName = "bqtest-" + UUID.randomUUID().toString();
+    Bucket bucket = storage.create(BucketInfo.of(bucketName));
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(MockContext.INSTANCE, storage, bigQuery, bucket,
+                                                                    project, 0, STAGING_TABLE_PREFIX, false, null, null,
+                                                                    null, false);
+
+    String dataset = "testSchemaNormalization";
+    String tableName = "test_table";
+    String fieldName = "field-with-dash";
+    String normalizedFieldName = "field_with_dash";
+    String fieldWithNumber = "1970-01-01";
+    String normalizedFieldWithNumber = "_1970_01_01";
+
+    try {
+      // test CREATE_TABLE operation
+      Schema schema = Schema.recordOf(tableName,
+                                      Schema.Field.of(fieldName, Schema.of(Schema.Type.INT)));
+      bigQuery.create(DatasetInfo.newBuilder(dataset).build());
+      DDLEvent createTable = DDLEvent.builder()
+        .setOperation(DDLOperation.Type.CREATE_TABLE)
+        .setDatabaseName(dataset)
+        .setTableName(tableName)
+        .setSchema(schema)
+        .setPrimaryKey(Collections.singletonList(fieldName))
+        .build();
+      eventConsumer.applyDDL(new Sequenced<>(createTable, 0));
+
+      Table table = bigQuery.getTable(TableId.of(dataset, tableName));
+      Assert.assertNotNull(table);
+      FieldList bqFields = table.getDefinition().getSchema().getFields();
+      Field normalizedField = bqFields.get(normalizedFieldName);
+      Assert.assertNotNull(normalizedField);
+      Assert.assertEquals(LegacySQLTypeName.INTEGER, normalizedField.getType());
+
+      // test ALTER_TABLE operation
+      schema = Schema.recordOf(tableName,
+                               Schema.Field.of(fieldName, Schema.of(Schema.Type.INT)),
+                               Schema.Field.of(fieldWithNumber, Schema.nullableOf(Schema.of(Schema.Type.STRING))));
+      DDLEvent alterTable = DDLEvent.builder()
+        .setOperation(DDLOperation.Type.ALTER_TABLE)
+        .setDatabaseName(dataset)
+        .setTableName(tableName)
+        .setSchema(schema)
+        .setPrimaryKey(Collections.singletonList(fieldName))
+        .build();
+      eventConsumer.applyDDL(new Sequenced<>(alterTable, 0));
+      table = bigQuery.getTable(TableId.of(dataset, tableName));
+      Assert.assertNotNull(table);
+      bqFields = table.getDefinition().getSchema().getFields();
+      normalizedField = bqFields.get(normalizedFieldWithNumber);
+      Assert.assertNotNull(normalizedField);
+      Assert.assertEquals(LegacySQLTypeName.STRING, normalizedField.getType());
+      eventConsumer.flush();
+      
+      // test INSERT Operation
+      StructuredRecord record = StructuredRecord.builder(schema)
+        .set(fieldName, 1)
+        .set(fieldWithNumber, "test varchar")
+        .build();
+      DMLEvent insertEvent = DMLEvent.builder()
+        .setOperationType(DMLOperation.Type.INSERT)
+        .setDatabaseName(dataset)
+        .setTableName(tableName)
+        .setRow(record)
+        .build();
+      eventConsumer.applyDML(new Sequenced<>(insertEvent, 1L));
+      eventConsumer.flush();
+      TableResult result = executeQuery(String.format("SELECT * from %s.%s", dataset, tableName));
+      Assert.assertEquals(1, result.getTotalRows());
+
+      // test TRUNCATE_TABLE Operation
+      DDLEvent truncateTable = DDLEvent.builder()
+        .setOperation(DDLOperation.Type.TRUNCATE_TABLE)
+        .setDatabaseName(dataset)
+        .setTableName(tableName)
+        .build();
+      eventConsumer.applyDDL(new Sequenced<>(truncateTable, 0));
+      table = bigQuery.getTable(TableId.of(dataset, tableName));
+      Assert.assertNotNull(table);
+      result = executeQuery(String.format("SELECT * from %s.%s", dataset, tableName));
+      Assert.assertEquals(0, result.getTotalRows());
+    } finally {
+      cleanupTest(bucket, dataset, eventConsumer);
+    }
+  }
+
   private void insertUpdateDelete(BigQueryEventConsumer eventConsumer, String dataset, boolean softDelete)
     throws Exception {
     List<String> tableNames = Arrays.asList("users1", "users2", "users3");

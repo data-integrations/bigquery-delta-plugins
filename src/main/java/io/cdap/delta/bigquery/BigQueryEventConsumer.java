@@ -354,7 +354,10 @@ public class BigQueryEventConsumer implements EventConsumer {
           bigQuery.delete(tableId);
         }
         List<String> primaryKeys = event.getPrimaryKey();
-        updatePrimaryKeys(tableId, primaryKeys);
+        List<String> normalizedPrimaryKeys = primaryKeys.stream()
+          .map(BigQueryUtils::normalizeFieldName)
+          .collect(Collectors.toList());
+        updatePrimaryKeys(tableId, normalizedPrimaryKeys);
         // TODO: check schema of table if it exists already
         if (table == null) {
           List<String> clusteringSupportedKeys = getClusteringSupportedKeys(primaryKeys, event.getSchema());
@@ -408,9 +411,10 @@ public class BigQueryEventConsumer implements EventConsumer {
         tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
         table = bigQuery.getTable(tableId);
         primaryKeys = event.getPrimaryKey();
+        List<String> clusteringSupportedKeys = getClusteringSupportedKeys(primaryKeys, event.getSchema());
         Clustering clustering = maxClusteringColumns <= 0 ? null :
           Clustering.newBuilder()
-            .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
+            .setFields(clusteringSupportedKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
             .build();
         TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
           .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema())))
@@ -426,8 +430,10 @@ public class BigQueryEventConsumer implements EventConsumer {
         } else {
           bigQuery.update(tableInfo);
         }
-
-        updatePrimaryKeys(tableId, primaryKeys);
+        normalizedPrimaryKeys = primaryKeys.stream()
+          .map(BigQueryUtils::normalizeFieldName)
+          .collect(Collectors.toList());
+        updatePrimaryKeys(tableId, normalizedPrimaryKeys);
         break;
       case RENAME_TABLE:
         // TODO: flush changes, execute a copy job, delete previous table, drop old staging table, remove old entry
@@ -470,7 +476,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     List<String> result = new ArrayList<>();
     for (String key : primaryKeys) {
       if (Schemas.isClusteringSupported(recordSchema.getField(key))) {
-        result.add(key);
+        result.add(BigQueryUtils.normalizeFieldName(key));
       }
     }
     return result;
@@ -544,7 +550,7 @@ public class BigQueryEventConsumer implements EventConsumer {
       BigQueryUtils.normalizeDatasetOrTableName(event.getOperation().getDatabaseName()) :
       BigQueryUtils.normalizeDatasetOrTableName(datasetName);
     String normalizedTableName = BigQueryUtils.normalizeDatasetOrTableName(event.getOperation().getTableName());
-    DMLEvent normalizedDMLEvent = DMLEvent.builder(event)
+    DMLEvent normalizedDMLEvent = BigQueryUtils.normalize(event)
       .setDatabaseName(normalizedDatabaseName)
       .setTableName(normalizedTableName)
       .build();

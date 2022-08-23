@@ -115,7 +115,7 @@ public class Schemas {
   }
 
   private static Field convertToBigQueryField(Schema.Field field) {
-    String name = field.getName();
+    String normalizedName = BigQueryUtils.normalizeFieldName(field.getName());
     boolean isNullable = field.getSchema().isNullable();
     Schema fieldSchema = field.getSchema();
     fieldSchema = isNullable ? fieldSchema.getNonNullable() : fieldSchema;
@@ -127,9 +127,9 @@ public class Schemas {
       if (bqType == null) {
         throw new IllegalArgumentException(
           String.format("Field '%s' is of type '%s', which is not supported in BigQuery.",
-                        name, logicalType.getToken()));
+                        normalizedName, logicalType.getToken()));
       }
-      return Field.newBuilder(name, bqType).setMode(fieldMode).build();
+      return Field.newBuilder(normalizedName, bqType).setMode(fieldMode).build();
     }
 
     Field output;
@@ -141,20 +141,20 @@ public class Schemas {
       if (bqType == null) {
         throw new IllegalArgumentException(
           String.format("Field '%s' is an array of '%s', which is not supported in BigQuery.",
-                        name, logicalType.getToken()));
+                        normalizedName, logicalType.getToken()));
       }
-      output = Field.newBuilder(name, bqType).setMode(Field.Mode.REPEATED).build();
+      output = Field.newBuilder(normalizedName, bqType).setMode(Field.Mode.REPEATED).build();
     } else if (type == Schema.Type.RECORD) {
       List<Field> subFields = convertFields(fieldSchema.getFields());
-      output = Field.newBuilder(name, StandardSQLTypeName.STRUCT, FieldList.of(subFields)).build();
+      output = Field.newBuilder(normalizedName, StandardSQLTypeName.STRUCT, FieldList.of(subFields)).build();
     } else {
       StandardSQLTypeName bqType = convertType(type);
       if (bqType == null) {
         throw new IllegalArgumentException(
           String.format("Field '%s' is of type '%s', which is not supported in BigQuery.",
-                        name, type.name().toLowerCase()));
+                        normalizedName, type.name().toLowerCase()));
       }
-      output = Field.newBuilder(name, bqType).setMode(fieldMode).build();
+      output = Field.newBuilder(normalizedName, bqType).setMode(fieldMode).build();
     }
     return output;
   }
