@@ -211,7 +211,7 @@ public final class BigQueryUtils {
       normalizedEventBuilder.setRow(normalize(event.getRow()));
     }
     if (event.getPreviousRow() != null) {
-      normalizedEventBuilder.setPreviousRow(normalize(event.getRow()));
+      normalizedEventBuilder.setPreviousRow(normalize(event.getPreviousRow()));
     }
     return normalizedEventBuilder;
   }
