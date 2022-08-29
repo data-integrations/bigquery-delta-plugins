@@ -91,22 +91,43 @@ public class BigQueryUtilsTest {
     }
 
     @Test
-    public void testNormalizeDataSetOrTableName() {
+    public void testNormalizeDatasetName() {
       // only contains number and letter
-      assertEquals("a2fs", BigQueryUtils.normalizeDatasetOrTableName("a2fs"));
+      assertEquals("a2fs", BigQueryUtils.normalizeDatasetName("a2fs"));
       // only contains number and letter start with number
-      assertEquals("2fas", BigQueryUtils.normalizeDatasetOrTableName("2fas"));
+      assertEquals("2fas", BigQueryUtils.normalizeDatasetName("2fas"));
       // only contains number and letter and length is 1024
       String name = Strings.repeat("a1", 512);
-      assertEquals(name, BigQueryUtils.normalizeDatasetOrTableName(name));
+      assertEquals(name, BigQueryUtils.normalizeDatasetName(name));
       // only contains number and letter and length is 1026
       name = Strings.repeat("a1", 513);
-      assertEquals(name.substring(0, 1024), BigQueryUtils.normalizeDatasetOrTableName(name));
+      assertEquals(name.substring(0, 1024), BigQueryUtils.normalizeDatasetName(name));
       // contains invalid character
-      assertEquals("ab_c", BigQueryUtils.normalizeDatasetOrTableName("ab?/c"));
-      // contains space
-      assertEquals("a2_fs", BigQueryUtils.normalizeFieldName("a2 fs"));
+      assertEquals("ab_c", BigQueryUtils.normalizeDatasetName("ab?/c"));
+      // contains space (invalid character)
+      assertEquals("a2_fs", BigQueryUtils.normalizeDatasetName("a2 fs"));
+      // contains hyphen (invalid character)
+      assertEquals("a2_fs", BigQueryUtils.normalizeDatasetName("a2-fs"));
+    }
 
+    @Test
+    public void testNormalizeTableName() {
+      // only contains number and letter
+      assertEquals("a2fs", BigQueryUtils.normalizeTableName("a2fs"));
+      // only contains number and letter start with number
+      assertEquals("2fas", BigQueryUtils.normalizeTableName("2fas"));
+      // only contains number and letter and length is 1024
+      String name = Strings.repeat("a1", 512);
+      assertEquals(name, BigQueryUtils.normalizeTableName(name));
+      // only contains number and letter and length is 1026
+      name = Strings.repeat("a1", 513);
+      assertEquals(name.substring(0, 1024), BigQueryUtils.normalizeTableName(name));
+      // contains invalid character
+      assertEquals("ab_c", BigQueryUtils.normalizeTableName("ab?c"));
+      // contains space (this is valid)
+      assertEquals("a2 fs", BigQueryUtils.normalizeTableName("a2 fs"));
+      // contains hyphen (this is valid)
+      assertEquals("a2-fs", BigQueryUtils.normalizeTableName("a2-fs"));
     }
 
     @Test
