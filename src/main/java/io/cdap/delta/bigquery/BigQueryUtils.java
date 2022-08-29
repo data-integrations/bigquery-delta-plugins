@@ -41,6 +41,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import javax.annotation.Nullable;
 
 /**
@@ -50,10 +51,16 @@ public final class BigQueryUtils {
   public static final int FIELD_NAME_MAX_LENGTH = 128;
   static final String BACKTICK = "`";
   private static final int DATASET_OR_TABLE_NAME_MAX_LENGTH = 1024;
-  // according to big query dataset and table naming convention, valid name should only contain letters (upper or
-  // lower case), numbers, and underscores
-  private static final String VALID_NAME_REGEX = "[\\w]+";
-  private static final String INVALID_NAME_REGEX = "[^\\w]+";
+  // Valid BigQuery dataset names can contain only letters, numbers, and underscores.
+  // See here: https://cloud.google.com/bigquery/docs/datasets#dataset-naming
+  private static final Pattern VALID_DATASET_NAME_REGEX = Pattern.compile("[\\w]+");
+  private static final Pattern INVALID_DATASET_NAME_REGEX = Pattern.compile("[^\\w]+");
+  // Valid BigQuery table names can contain only Unicode characters in category L (letter), M (mark), N (number),
+  // Pc (connector, including underscore), Pd (dash), Zs (space).
+  // See here: https://cloud.google.com/bigquery/docs/tables#table_naming
+  private static final Pattern VALID_TABLE_NAME_REGEX = Pattern.compile("[\\p{L}\\p{M}\\p{N}\\p{Pc}\\p{Pd}\\p{Zs}]+");
+  private static final Pattern INVALID_TABLE_NAME_REGEX =
+          Pattern.compile("[^\\p{L}\\p{M}\\p{N}\\p{Pc}\\p{Pd}\\p{Zs}]+");
 
   private BigQueryUtils() {
   }
@@ -92,8 +99,8 @@ public final class BigQueryUtils {
     builder.append("SELECT MAX(max_sequence_num) FROM (");
     List<String> maxSequenceNumQueryPerTable = new ArrayList<>();
     for (SourceTable table : allTables) {
-      TableId tableId = TableId.of(project, datasetName != null ? normalizeDatasetOrTableName(datasetName) :
-        normalizeDatasetOrTableName(table.getDatabase()), normalizeDatasetOrTableName(table.getTable()));
+      TableId tableId = TableId.of(project, datasetName != null ? normalizeDatasetName(datasetName) :
+        normalizeDatasetName(table.getDatabase()), normalizeTableName(table.getTable()));
       if (bigQuery.getTable(tableId) != null) {
         maxSequenceNumQueryPerTable.add(String.format("SELECT MAX(_sequence_num) as max_sequence_num FROM %s",
                                                       wrapInBackTick(tableId.getDataset(), tableId.getTable())));
@@ -156,14 +163,26 @@ public final class BigQueryUtils {
   }
 
   /**
-   * Normalize the dataset or table name according to BigQuery's requirement.
-   * The name  must contain only letters, numbers, and underscores.
+   * Normalize the dataset name according to BigQuery's requirement.
+   * The name must contain only letters, numbers, and underscores.
    * And it must be 1024 characters or fewer.
-   * @param name the dataset name or table name to be normalized
+   * @param name the dataset name to be normalized
    * @return the normalized name
    */
-  public static String normalizeDatasetOrTableName(String name) {
-    return normalize(name, DATASET_OR_TABLE_NAME_MAX_LENGTH, true);
+  public static String normalizeDatasetName(String name) {
+    return normalize(name, DATASET_OR_TABLE_NAME_MAX_LENGTH, true, false);
+  }
+
+  /**
+   * Normalize the table name according to BigQuery's requirement.
+   * The name must contain only Unicode characters in category L (letter), M (mark), N (number),
+   * Pc (connector, including underscore), Pd (dash), Zs (space).
+   * See here: https://cloud.google.com/bigquery/docs/tables#table_naming
+   * @param name the dataset name to be normalized
+   * @return the normalized name
+   */
+  public static String normalizeTableName(String name) {
+    return normalize(name, DATASET_OR_TABLE_NAME_MAX_LENGTH, true, true);
   }
 
   /**
@@ -174,17 +193,20 @@ public final class BigQueryUtils {
    * @return the normalized name
    */
   public static String normalizeFieldName(String name) {
-    return normalize(name, FIELD_NAME_MAX_LENGTH, false);
+    return normalize(name, FIELD_NAME_MAX_LENGTH, false, false);
   }
 
-  private static String normalize(String name, int maxLength, boolean canStartWithNumber) {
+  private static String normalize(String name, int maxLength, boolean canStartWithNumber, boolean useExtendedCharset) {
     if (name == null || name.isEmpty()) {
       return name;
     }
 
     // replace invalid chars with underscores if there are any
-    if (!name.matches(VALID_NAME_REGEX)) {
-      name = name.replaceAll(INVALID_NAME_REGEX, "_");
+    if (useExtendedCharset && !VALID_TABLE_NAME_REGEX.matcher(name).matches()) {
+      name = INVALID_TABLE_NAME_REGEX.matcher(name).replaceAll("_");
+    }
+    if (!useExtendedCharset && !VALID_DATASET_NAME_REGEX.matcher(name).matches()) {
+      name = INVALID_DATASET_NAME_REGEX.matcher(name).replaceAll("_");
     }
 
     // prepend underscore if the first character is a number and the name cannot start with number

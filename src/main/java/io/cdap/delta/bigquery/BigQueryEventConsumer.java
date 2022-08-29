@@ -277,11 +277,11 @@ public class BigQueryEventConsumer implements EventConsumer {
     DDLEvent event = sequencedEvent.getEvent();
     DDLOperation ddlOperation = event.getOperation();
     String normalizedDatabaseName = datasetName == null ?
-      BigQueryUtils.normalizeDatasetOrTableName(event.getOperation().getDatabaseName()) :
-      BigQueryUtils.normalizeDatasetOrTableName(datasetName);
-    String normalizedTableName = BigQueryUtils.normalizeDatasetOrTableName(ddlOperation.getTableName());
+      BigQueryUtils.normalizeDatasetName(event.getOperation().getDatabaseName()) :
+      BigQueryUtils.normalizeDatasetName(datasetName);
+    String normalizedTableName = BigQueryUtils.normalizeTableName(ddlOperation.getTableName());
     String normalizedStagingTableName = normalizedTableName == null ? null :
-      BigQueryUtils.normalizeDatasetOrTableName(stagingTablePrefix + normalizedTableName);
+      BigQueryUtils.normalizeTableName(stagingTablePrefix + normalizedTableName);
 
     runWithRetries(ctx -> handleDDL(event, normalizedDatabaseName, normalizedTableName, normalizedStagingTableName),
                    baseRetryDelay,
@@ -547,9 +547,9 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
     DMLEvent event = sequencedEvent.getEvent();
     String normalizedDatabaseName = datasetName == null ?
-      BigQueryUtils.normalizeDatasetOrTableName(event.getOperation().getDatabaseName()) :
-      BigQueryUtils.normalizeDatasetOrTableName(datasetName);
-    String normalizedTableName = BigQueryUtils.normalizeDatasetOrTableName(event.getOperation().getTableName());
+      BigQueryUtils.normalizeDatasetName(event.getOperation().getDatabaseName()) :
+      BigQueryUtils.normalizeDatasetName(datasetName);
+    String normalizedTableName = BigQueryUtils.normalizeTableName(event.getOperation().getTableName());
     DMLEvent normalizedDMLEvent = BigQueryUtils.normalize(event)
       .setDatabaseName(normalizedDatabaseName)
       .setTableName(normalizedTableName)
@@ -676,7 +676,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   private void mergeTableChanges(TableBlob blob) throws DeltaFailureException, InterruptedException {
-    String normalizedStagingTableName = BigQueryUtils.normalizeDatasetOrTableName(stagingTablePrefix + blob.getTable());
+    String normalizedStagingTableName = BigQueryUtils.normalizeTableName(stagingTablePrefix + blob.getTable());
     TableId stagingTableId = TableId.of(project, blob.getDataset(), normalizedStagingTableName);
     long retryDelay = Math.min(91, context.getMaxRetrySeconds()) - 1;
     runWithRetries(runContext -> loadTable(stagingTableId, blob, false, runContext.getAttemptCount()),
