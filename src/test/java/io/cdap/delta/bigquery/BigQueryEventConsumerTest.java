@@ -183,6 +183,58 @@ public class BigQueryEventConsumerTest {
   }
 
   @Test
+  public void testHandleCreateTableAlreadyExists() throws Exception {
+    String bucketName = "bqtest-" + UUID.randomUUID().toString();
+    Bucket bucket = storage.create(BucketInfo.of(bucketName));
+    Map<String, String> runtimeArguments = new HashMap<>();
+    runtimeArguments.put("gcp.bigquery.max.clustering.columns", "4");
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(new MockContext(300, runtimeArguments), storage,
+            bigQuery, bucket, project, 0, STAGING_TABLE_PREFIX,
+            true, null, 1L, null, false);
+    String dataset = "testTableCreationWithClustering_" + UUID.randomUUID().toString().replaceAll("-", "_");
+    String tableName = "users";
+    List<String> primaryKeys = new ArrayList<>();
+    primaryKeys.add("id1");
+    primaryKeys.add("id2");
+    primaryKeys.add("id3");
+    primaryKeys.add("id4");
+    primaryKeys.add("id5");
+    Schema schema = Schema.recordOf(tableName,
+            Schema.Field.of("id1", Schema.of(Schema.Type.INT)),
+            Schema.Field.of("id2", Schema.of(Schema.Type.INT)),
+            Schema.Field.of("id3", Schema.of(Schema.Type.INT)),
+            Schema.Field.of("id4", Schema.of(Schema.Type.INT)),
+            Schema.Field.of("id5", Schema.of(Schema.Type.INT)));
+    TableId tableId = TableId.of(dataset, tableName);
+
+    StandardTableDefinition tableDefinition = StandardTableDefinition.newBuilder()
+            .setSchema(Schemas.convert(schema))
+            .build();
+    TableInfo.Builder builder = TableInfo.newBuilder(tableId, tableDefinition);
+    TableInfo tableInfo = builder.build();
+
+    bigQuery.create(DatasetInfo.newBuilder(dataset).build());
+    bigQuery.create(tableInfo);
+
+    DDLEvent createTable = DDLEvent.builder()
+            .setOperation(DDLOperation.Type.CREATE_TABLE)
+            .setDatabaseName(dataset)
+            .setTableName(tableName)
+            .setSchema(schema)
+            .setPrimaryKey(primaryKeys)
+            .setOffset(new Offset())
+            .build();
+
+    eventConsumer.applyDDL(new Sequenced<>(createTable, 0));
+
+    Table table = bigQuery.getTable(tableId);
+    Assert.assertNotNull(table);
+
+    bigQuery.delete(tableId);
+    cleanupTest(bucket, dataset, eventConsumer);
+  }
+
+  @Test
   public void testCreateTableWithInvalidTypesForClustering() throws Exception {
     String bucketName = "bqtest-" + UUID.randomUUID().toString();
     Bucket bucket = storage.create(BucketInfo.of(bucketName));
