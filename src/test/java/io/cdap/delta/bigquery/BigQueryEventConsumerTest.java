@@ -390,16 +390,16 @@ public class BigQueryEventConsumerTest {
 
       // alter schema to add a nullable field and make a non-nullable field into a nullable field
       Schema updatedSchema =
-        Schema.recordOf("user-new",
-                        Schema.Field.of("id", Schema.of(Schema.Type.INT)),
-                        Schema.Field.of("name", Schema.of(Schema.Type.STRING)),
-                        Schema.Field.of("created", Schema.of(Schema.LogicalType.TIMESTAMP_MILLIS)),
-                        // alter bday to be nullable
-                        Schema.Field.of("bday", Schema.nullableOf(Schema.of(Schema.LogicalType.DATE))),
-                        // add a new nullable age field
-                        Schema.Field.of("age", Schema.nullableOf(Schema.of(Schema.Type.INT))),
-                        Schema.Field.of("score", Schema.nullableOf(Schema.of(Schema.Type.DOUBLE))),
-                        Schema.Field.of("partition", Schema.nullableOf(Schema.of(Schema.Type.INT))));
+        Schema.recordOf("user.new",
+                Schema.Field.of("id", Schema.of(Schema.Type.INT)),
+                Schema.Field.of("name", Schema.of(Schema.Type.STRING)),
+                Schema.Field.of("created", Schema.of(Schema.LogicalType.TIMESTAMP_MILLIS)),
+                // alter bday to be nullable
+                Schema.Field.of("bday", Schema.nullableOf(Schema.of(Schema.LogicalType.DATE))),
+                // add a new nullable age field
+                Schema.Field.of("age", Schema.nullableOf(Schema.of(Schema.Type.INT))),
+                Schema.Field.of("score", Schema.nullableOf(Schema.of(Schema.Type.DOUBLE))),
+                Schema.Field.of("partition", Schema.nullableOf(Schema.of(Schema.Type.INT))));
       DDLEvent alterEvent = DDLEvent.builder()
         .setOperation(DDLOperation.Type.ALTER_TABLE)
         .setDatabaseName(dataset)
