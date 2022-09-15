@@ -26,6 +26,8 @@ public final class Constants {
   public static final String ROW_ID = "_row_id";
   public static final String OPERATION = "_op";
   public static final String BATCH_ID = "_batch_id";
+  public static final String SORT_KEYS = "_sort";
+  public static final String SORT_KEY_FIELD = "_key";
 
   private Constants() {}
 }

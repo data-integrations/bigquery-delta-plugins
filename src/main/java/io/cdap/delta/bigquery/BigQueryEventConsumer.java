@@ -16,12 +16,15 @@
 
 package io.cdap.delta.bigquery;
 
+import avro.shaded.com.google.common.collect.ImmutableList;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.Clustering;
 import com.google.cloud.bigquery.DatasetId;
 import com.google.cloud.bigquery.DatasetInfo;
 import com.google.cloud.bigquery.EncryptionConfiguration;
+import com.google.cloud.bigquery.Field;
+import com.google.cloud.bigquery.FieldList;
 import com.google.cloud.bigquery.FormatOptions;
 import com.google.cloud.bigquery.Job;
 import com.google.cloud.bigquery.JobId;
@@ -49,6 +52,7 @@ import io.cdap.delta.api.EventConsumer;
 import io.cdap.delta.api.Offset;
 import io.cdap.delta.api.ReplicationError;
 import io.cdap.delta.api.Sequenced;
+import io.cdap.delta.api.SortKey;
 import io.cdap.delta.api.SourceProperties;
 import net.jodah.failsafe.Failsafe;
 import net.jodah.failsafe.FailsafeException;
@@ -67,6 +71,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -171,6 +176,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final Map<TableId, Long> latestSeenSequence;
   private final Map<TableId, Long> latestMergedSequence;
   private final Map<TableId, List<String>> primaryKeyStore;
+  private final Map<TableId, SortKeyState> sortKeyStore;
   private final boolean requireManualDrops;
   private final long baseRetryDelay;
   private final int maxClusteringColumns;
@@ -207,6 +213,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     this.latestMergedSequence = new HashMap<>();
     this.latestSeenSequence = new HashMap<>();
     this.primaryKeyStore = new HashMap<>();
+    this.sortKeyStore = new HashMap<>();
     this.commitRetryPolicy = new RetryPolicy<>()
       .withMaxAttempts(Integer.MAX_VALUE)
       .withMaxDuration(Duration.of(5, ChronoUnit.MINUTES))
@@ -367,7 +374,7 @@ public class BigQueryEventConsumer implements EventConsumer {
                                                                      clusteringSupportedKeys.size())))
               .build();
           TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
-            .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema())))
+            .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema(), tableId)))
             .setClustering(clustering)
             .build();
 
@@ -417,7 +424,7 @@ public class BigQueryEventConsumer implements EventConsumer {
             .setFields(clusteringSupportedKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
             .build();
         TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
-          .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema())))
+          .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema(), tableId)))
           .setClustering(clustering)
           .build();
         TableInfo.Builder builder = TableInfo.newBuilder(tableId, tableDefinition);
@@ -456,7 +463,7 @@ public class BigQueryEventConsumer implements EventConsumer {
               .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
               .build();
           tableDefinition = StandardTableDefinition.newBuilder()
-            .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema())))
+            .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema(), tableId)))
             .setClustering(clustering)
             .build();
         }
@@ -493,15 +500,14 @@ public class BigQueryEventConsumer implements EventConsumer {
       return;
     }
     primaryKeyStore.put(tableId, primaryKeys);
-    context.putState(String.format("bigquery-%s-%s", tableId.getDataset(), tableId.getTable()),
+    context.putState(getTableStateKey(tableId),
                      Bytes.toBytes(GSON.toJson(new BigQueryTableState(primaryKeys))));
   }
 
   private List<String> getPrimaryKeys(TableId targetTableId) throws IOException, DeltaFailureException {
     List<String> primaryKeys = primaryKeyStore.get(targetTableId);
     if (primaryKeys == null) {
-      byte[] stateBytes = context.getState(
-        String.format("bigquery-%s-%s", targetTableId.getDataset(), targetTableId.getTable()));
+      byte[] stateBytes = context.getState(getTableStateKey(targetTableId));
       if (stateBytes == null) {
         throw new DeltaFailureException(
           String.format("Primary key information for table '%s' in dataset '%s' could not be found. This can only " +
@@ -514,12 +520,18 @@ public class BigQueryEventConsumer implements EventConsumer {
     return primaryKeys;
   }
 
-  static Schema addSupplementaryColumnsToTargetSchema(Schema original) {
+  private Schema addSupplementaryColumnsToTargetSchema(Schema original, TableId tableId) throws IOException {
     List<Schema.Field> fields = new ArrayList<>(original.getFields().size() + 4);
     fields.add(Schema.Field.of(Constants.SEQUENCE_NUM, Schema.of(Schema.Type.LONG)));
     fields.add(Schema.Field.of(Constants.IS_DELETED, Schema.nullableOf(Schema.of(Schema.Type.BOOLEAN))));
     fields.add(Schema.Field.of(Constants.ROW_ID, Schema.nullableOf(Schema.of(Schema.Type.STRING))));
     fields.add(Schema.Field.of(Constants.SOURCE_TIMESTAMP, Schema.nullableOf(Schema.of(Schema.Type.LONG))));
+    if (sourceEventOrdering == SourceProperties.Ordering.UN_ORDERED) {
+      Optional<List<Schema.Type>> sortKeys = getSortKeys(tableId);
+      if (sortKeys.isPresent()) {
+        fields.add(Schema.Field.of(Constants.SORT_KEYS, Schemas.getSortKeysSchema(sortKeys.get())));
+      }
+    }
     fields.addAll(original.getFields());
     return Schema.recordOf(original.getRecordName() + ".sequenced", fields);
   }
@@ -587,6 +599,10 @@ public class BigQueryEventConsumer implements EventConsumer {
       context.setTableSnapshotting(normalizedDatabaseName, normalizedTableName);
     } else {
       context.setTableReplicating(normalizedDatabaseName, normalizedTableName);
+    }
+
+    if (sourceEventOrdering == SourceProperties.Ordering.UN_ORDERED && !getCachedSortKeys(tableId).isPresent()) {
+      storeSortKeys(tableId, event.getSortKeys());
     }
   }
 
@@ -715,8 +731,8 @@ public class BigQueryEventConsumer implements EventConsumer {
 
   private void loadTable(TableId tableId, TableBlob blob, boolean directLoadToTarget, int attemptNumber)
     throws InterruptedException, IOException, DeltaFailureException {
-    LOG.info("Loading batch {} of {} events into staging table for {}.{}", blob.getBatchId(), blob.getNumEvents(),
-             blob.getDataset(), blob.getTable());
+    LOG.info("Loading batch {} of {} events into {} table for {}.{}", blob.getBatchId(), blob.getNumEvents(),
+            directLoadToTarget ? "target" : "staging", blob.getDataset(), blob.getTable());
     Table table = bigQuery.getTable(tableId);
     if (table == null) {
       List<String> primaryKeys = getPrimaryKeys(TableId.of(project, blob.getDataset(), blob.getTable()));
@@ -735,7 +751,6 @@ public class BigQueryEventConsumer implements EventConsumer {
       TableInfo tableInfo = builder.build();
       bigQuery.create(tableInfo);
     }
-
     // load data from GCS object into staging BQ table
     // batch id is a timestamp generated at the time the first event was seen, so the job id is
     // guaranteed to be different from the previous batch for the table
@@ -750,8 +765,10 @@ public class BigQueryEventConsumer implements EventConsumer {
     // Explicitly set schema for load jobs 
     com.google.cloud.bigquery.Schema bqSchema
       = Schemas.convert(directLoadToTarget ? blob.getTargetSchema() : blob.getStagingSchema());
-    LoadJobConfiguration.Builder jobConfigBuilder = LoadJobConfiguration.newBuilder(tableId, uri)
-      .setSchema(bqSchema);
+    LoadJobConfiguration.Builder jobConfigBuilder = LoadJobConfiguration
+            .newBuilder(tableId, uri)
+            .setSchema(bqSchema)
+            .setSchemaUpdateOptions(ImmutableList.of(JobInfo.SchemaUpdateOption.ALLOW_FIELD_ADDITION));
     if (encryptionConfig != null) {
       jobConfigBuilder.setDestinationEncryptionConfiguration(encryptionConfig);
     }
@@ -783,11 +800,13 @@ public class BigQueryEventConsumer implements EventConsumer {
 
   private void mergeStagingTable(TableId stagingTableId, TableBlob blob,
                                  int attemptNumber) throws InterruptedException, IOException, DeltaFailureException {
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Merging batch {} for {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
-    }
+
+    LOG.info("Merging batch {} for {}.{}", blob.getBatchId(), blob.getDataset(), blob.getTable());
+
     TableId targetTableId = TableId.of(project, blob.getDataset(), blob.getTable());
     List<String> primaryKeys = getPrimaryKeys(targetTableId);
+    Optional<List<Schema.Type>> sortKeys = getCachedSortKeys(targetTableId);
+
     /*
      * Merge data from staging BQ table into target table.
      *
@@ -842,15 +861,25 @@ public class BigQueryEventConsumer implements EventConsumer {
      * Case 2: Source generates events without row id and events are unordered.
      * The major differences between Case 1 and Case 2 are that:
      * a. For diff query, when join staging table with its self, join condition should contain:
-     *    A._source_timestamp < B._source_timestamp instead of A._sequence_num < B._sequence_num
+     *    $ORDERING_CONDITION instead of A._sequence_num < B._sequence_num
      *    to make sure events in A are joining with events happening later in B. Because for ordered events, sequence
      *    num can decide the ordering while for unordered events, source timestamp can decide the ordering.
+     *
+     *    Where $ORDERING_CONDITION is of the form
+     *
+     *     (A._sort._key_0 < B._sort._key_0) OR
+     *     (A._sort._key_0 = B._sort._key_0  AND A._sort._key_1 < B._sort._key_1) OR
+     *     ...
+     *     (A._sort._key_0 = B._sort._key_0  ... AND A._sort._key_n-1 = B._sort._key_n-1  AND
+     *     A._sort._key_n < B._sort._key_n)
+     *
+     *    _sort is a struct column consisting of list of fields (_key_0, _key_1 ... _key_n) that each record
+     *    can be sorted by, in the order that the comparison should be performed
      *
      * b. When merging a delete event, instead of deleting the row, we update the '_is_delete' column to true.
      *    Because it's possible that an earlier happening update event comes late, if we delete the row, this late
      *    coming update event will insert a new row. second difference makes sure such event will be ignored.
-     * c. When merging delete and update event, we add an additional condition :
-     *    D._source_timestamp >= T._source_timestamp
+     * c. When merging delete and update event, we add an additional condition $ORDERING_CONDITION
      *    Because it's possible that an earlier happening update event comes late, we should ignore such event, if
      *    events happening later than this event has already been applied to target table.
      *
@@ -859,20 +888,20 @@ public class BigQueryEventConsumer implements EventConsumer {
      *  MERGE [target table] as T
      *  USING ($DIFF_QUERY) as D
      *  ON T.id = D._before_id
-     *  WHEN MATCHED AND D._op = "DELETE" AND D._source_timestamp >= T._source_timestamp
+     *  WHEN MATCHED AND D._op = "DELETE" AND $ORDERING_CONDITION
      *    UPDATE SET T._is_deleted = true
-     *  WHEN MATCHED AND D._op IN ("INSERT", "UPDATE") AND D._source_timestamp >= T._source_timestamp
+     *  WHEN MATCHED AND D._op IN ("INSERT", "UPDATE") AND $ORDERING_CONDITION
      *    UPDATE id = D.id, name = D.name
      *  WHEN NOT MATCHED AND D._op IN ("INSERT", "UPDATE")
-     *    INSERT (_sequence_num, _is_deleted, _source_timestamp, id, name) VALUES (D._sequence_num, false, D
-     * ._source_timestamp, id, name)
+     *    INSERT (_sequence_num, _is_deleted, _source_timestamp, _sort, id, name) VALUES (D._sequence_num, false, D
+     * ._source_timestamp, D._sort,  id, name)
      *
      * The purpose $DIFF_QUERY is same as case 1 but the form of it  would be:
      *   SELECT A.* FROM
      *   (SELECT * FROM [staging table] WHERE _batch_id = 1234567890 AND _sequence_num > $LATEST_APPLIED) as A
      *   LEFT OUTER JOIN
      *   (SELECT * FROM [staging table] WHERE _batch_id = 1234567890 AND _sequence_num > $LATEST_APPLIED) as B
-     *   ON A.id = B._before_id AND A._source_timestamp < B._source_timestamp
+     *   ON A.id = B._before_id AND $ORDERING_CONDITION
      *   WHERE B._before_id IS NULL
      *
      * Case 3: Source generates events with row id and events are ordered.
@@ -927,29 +956,30 @@ public class BigQueryEventConsumer implements EventConsumer {
      *  Case 4: Source generates events with row id and events are unordered.
      *  Similar as the differences between Case 1 & Case 2, the differences between Case 3 and Case 4 are that:
      *  a. For diff query, when join staging table with its self, join condition should contain:
-     *    A._source_timestamp < B._source_timestamp instead of A._sequence_num < B._sequence_num
+     *    $ORDERING_CONDITION instead of A._sequence_num < B._sequence_num
      *    to make sure events in A are joining with events happening later in B. Because for ordered events, sequence
-     *    num can decide the ordering while for unordered events, source timestamp can decide the ordering.
+     *    num can decide the ordering while for unordered events, _sort can decide the ordering.
      *  b. When merging a delete event, instead of deleting the row, we update the '_is_delete' column to true.
      *    Because it's possible that an earlier happening update event comes late, if we delete the row, this late
      *    coming update event will insert a new row. second difference makes sure such event will be ignored.
-     *  c. When merging delete and update event, we add an additional condition :
-     *    D._source_timestamp >= T._source_timestamp
+     *  c. When merging delete and update event, we add an additional $ORDERING_CONDITION
      *    Because it's possible that an earlier happening update event comes late, we should ignore such event, if
      *    events happening later than this event has already been applied to target table.
+     *   $ORDERING_CONDITION is the same as mentioned in Case 2
      *
      * So the merge query would be :
      *
      * MERGE [target table] as T
      *  USING ($DIFF_QUERY) as D
      * ON T.row_id = D.row_id
-     * WHEN MATCHED AND D.op = “DELETE” AND D._source_timestamp >= T._source_timestamp
+     * WHEN MATCHED AND D.op = “DELETE” AND $ORDERING_CONDITION
      *    UPDATE _is_deleted = true
-     * WHEN MATCHED AND D.op IN (“INSERT”, “UPDATE”) AND D._source_timestamp >= T._source_timestamp
-     *    UPDATE _sequence_num = D._sequence_num, _source_timestamp = D._source_timestamp, id = D.id, name = D.name
+     * WHEN MATCHED AND D.op IN (“INSERT”, “UPDATE”) AND $ORDERING_CONDITION
+     *    UPDATE _sequence_num = D._sequence_num, _source_timestamp = D._source_timestamp,
+     *      _sort = D._sort, id = D.id, name = D.name
      * WHEN NOT MATCHED
-     *    INSERT (_sequence_num, _row_id, _source_timestamp, _is_deleted, id, name) VALUES
-     *           (D._sequence_num, D._row_id, D._source_timestamp, false, D.id, D.name)
+     *    INSERT (_sequence_num, _row_id, _source_timestamp, _sort, _is_deleted, id, name) VALUES
+     *           (D._sequence_num, D._row_id, D._source_timestamp, D._sort, false, D.id, D.name)
      *
      * The purpose $DIFF_QUERY is same as case 3 but the form of it  would be:
      * SELECT A.* FROM
@@ -958,21 +988,25 @@ public class BigQueryEventConsumer implements EventConsumer {
      *      LEFT OUTER JOIN
      *      (SELECT * FROM [staging table]
      *          WHERE _batch_id = 1234567890 AND _sequence_num > $LATEST_APPLIED) as B
-     *      ON A._row_id = B._row_id AND A._source_timestamp < B._source_timestamp
+     *      ON A._row_id = B._row_id AND $ORDERING_CONDITION
      * WHERE B._row_id IS NULL
      */
 
     String diffQuery =
       createDiffQuery(stagingTableId, primaryKeys, blob.getBatchId(), latestMergedSequence.get(targetTableId),
-        sourceRowIdSupported, sourceEventOrdering);
+        sourceRowIdSupported, sourceEventOrdering, sortKeys);
     if (LOG.isTraceEnabled()) {
       LOG.trace("Diff query : {}", diffQuery);
     }
     String mergeQuery =
       createMergeQuery(targetTableId, primaryKeys, blob.getTargetSchema(), diffQuery, sourceRowIdSupported,
-        sourceEventOrdering, softDeletesEnabled);
+        sourceEventOrdering, softDeletesEnabled, sortKeys);
     if (LOG.isTraceEnabled()) {
       LOG.trace("Merge query : {}", mergeQuery);
+    }
+
+    if (sortKeys.isPresent() && !sortKeyStore.get(targetTableId).isAddedToTarget()) {
+      addSortKeyToTargetTable(targetTableId, sortKeys.get());
     }
 
     QueryJobConfiguration.Builder jobConfigBuilder = QueryJobConfiguration.newBuilder(mergeQuery);
@@ -1008,7 +1042,7 @@ public class BigQueryEventConsumer implements EventConsumer {
 
   static String createDiffQuery(TableId stagingTable, List<String> primaryKeys, long batchId,
                                 Long latestSequenceNumInTargetTable, boolean sourceRowIdSupported,
-                                SourceProperties.Ordering sourceEventsOrdering) {
+                                SourceProperties.Ordering sourceEventsOrdering, Optional<List<Schema.Type>> sortKeys) {
     String joinCondition;
     String whereClause;
     /*
@@ -1035,9 +1069,13 @@ public class BigQueryEventConsumer implements EventConsumer {
      * 1. For Ordered events, the $JOIN_CONDITION will contain :
      *    A._sequence_num < B._sequence_num
      *    Because events are ordered, this makes sure event in B happens later than event in A
-     * 2. For Un-Ordered events, the $JOIN_CONDITION will contain :
-     *    A._source_timestamp < B._source_timestamp
-     *    Because events are unordered, sequence number doesn't ensure the ordering but source timestamp can.
+     * 2. For Un-Ordered events, the $JOIN_CONDITION will contain $ORDERING_CONDITION :
+     *     (A._sort._key_0 < B._sort._key_0) OR
+     *     (A._sort._key_0 = B._sort._key_0  AND A._sort._key_1 < B._sort._key_1) OR
+     *     ...
+     *     (A._sort._key_0 = B._sort._key_0  ... AND A._sort._key_n-1 = B._sort._key_n-1 AND
+     *         A._sort._key_n < B._sort._key_n)
+     *    Because events are unordered, sequence number doesn't ensure the ordering but sort keys can.
      *    This makes sure event in B happens later than event in A
      */
     if (sourceRowIdSupported) {
@@ -1057,8 +1095,7 @@ public class BigQueryEventConsumer implements EventConsumer {
       joinCondition += String.format(" AND A.%s < B.%1$s\n", Constants.SEQUENCE_NUM);
 
     } else {
-      joinCondition += String.format(" AND (A.%s < B.%1$s OR A.%1$s = B.%1$s AND A.%s < B.%2$s)\n",
-        Constants.SOURCE_TIMESTAMP, Constants.SEQUENCE_NUM);
+      joinCondition += getOrderingCondition(sortKeys, "A", "B");
     }
     return "SELECT A.* FROM\n" +
       "(SELECT * FROM " + BigQueryUtils.wrapInBackTick(stagingTable.getDataset(), stagingTable.getTable()) +
@@ -1069,14 +1106,14 @@ public class BigQueryEventConsumer implements EventConsumer {
       " WHERE _batch_id = " + batchId +
       " AND _sequence_num > " + latestSequenceNumInTargetTable + ") as B\n" +
       "ON " + joinCondition +
-      "WHERE " + whereClause;
+      " WHERE " + whereClause;
   }
 
   static String createMergeQuery(TableId targetTableId, List<String> primaryKeys, Schema targetSchema,
                                  String diffQuery, boolean sourceRowIdSupported,
-                                 SourceProperties.Ordering sourceEventOrdering, boolean softDeletesEnabled) {
+                                 SourceProperties.Ordering sourceEventOrdering, boolean softDeletesEnabled,
+                                 Optional<List<Schema.Type>> sortKeys) {
     String mergeCondition;
-
 
     /*
      * Merge query will be of the following form:
@@ -1112,8 +1149,7 @@ public class BigQueryEventConsumer implements EventConsumer {
      * 3. For Ordered events, $UPDATE_AND_DELETE_CONDITION will be :
      *    ""
      *    Which means no additional conditions is needed
-     * 4. For Un-ordered events, $UPDATE_AND_DELETE_CONDITION will be :
-     *    D._source_timestamp >= T._source_timestamp
+     * 4. For Un-ordered events, $UPDATE_AND_DELETE_CONDITION will be $ORDERING_CONDITION
      *    Because it's possible that an earlier happening update event comes late, we should ignore such event, if
      *    events happening later than this event has already been applied to target table.
      * 5. For Un-ordered events, when a delete event is not matching any row in the target table (this could happen
@@ -1148,7 +1184,7 @@ public class BigQueryEventConsumer implements EventConsumer {
         return false;
       }
 
-      if (field.getName().equals(Constants.SOURCE_TIMESTAMP)) {
+      if (field.getName().equals(Constants.SOURCE_TIMESTAMP) || field.getName().contains(Constants.SORT_KEYS)) {
         return sourceEventOrdering == SourceProperties.Ordering.UN_ORDERED;
       }
 
@@ -1180,12 +1216,15 @@ public class BigQueryEventConsumer implements EventConsumer {
       }
     } else {
       // for unordered events
-      deleteOperation = "  UPDATE SET " + Constants.IS_DELETED + " = true ";
-      // if events are unordered , source timestamp can decide the ordering
+      deleteOperation = "  UPDATE SET " + targetSchema.getFields().stream()
+              .filter(predicate)
+              .map(Schema.Field::getName)
+              .map(name -> String.format("`%s` = D.`%s`", name, name))
+              .collect(Collectors.joining(", ")) + ", " + Constants.IS_DELETED + " = true ";
+      // if events are unordered , sort keys can decide the ordering
       // if an event happening earlier comes later , it's possible that some events happening later against the same
       // row has already been merged, so this late coming event should be ignored.
-      updateAndDeleteCondition =  String.format("AND ( D.%s > T.%1$s OR D.%1$s = T.%1$s AND D.%s > T.%2$s)\n",
-        Constants.SOURCE_TIMESTAMP, Constants.SEQUENCE_NUM);
+      updateAndDeleteCondition = getOrderingCondition(sortKeys, "T", "D");
     }
 
     String mergeQuery = "MERGE " +
@@ -1271,6 +1310,81 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
   }
 
+  /**
+   * Creates the ordering condition to ensure that event in B happens later than event in A
+   * assuming aliasLeft = A and aliasRight = B
+   *
+   * Scenario 1 - Sort keys are present
+   *  For 3 sort keys, 'A' as leftAlias and 'B' as rightAlias
+   *  (A._sort._key_0 is NOT NULL AND B._sort._key_0 is NOT NULL AND
+   *  (A._sort._key_0 < B._sort._key_0) OR
+   *  (A._sort._key_0 = B._sort._key_0  AND A._sort._key_1 < B._sort._key_1) OR
+   *  (A._sort._key_0 = B._sort._key_0  AND  A._sort._key_1 = B._sort._key_1  AND A._sort._key_2 < B._sort._key_2))
+   *  OR $BACKWARD_COMPAT_CONDITION)
+   *
+   *  where $BACKWARD_COMPAT_CONDITION takes care of the scenario where one or both rows do not have sort key
+   *  It is used to ensure the ordering for older data which might not have sort keys in upgrade scenarios
+   *    (A._sort._key_0 is NULL OR B._sort._key_0 is NULL) AND
+   *    (A._source_timestamp < B._source_timestamp OR A._source_timestamp = B._source_timestamp AND
+   *    A._sequence_num < B._sequence_num)
+   *
+   *  Scenario 2 - Sort keys are not present, use source timestamp for ordering
+   *  (A._source_timestamp < B._source_timestamp OR A._source_timestamp = B._source_timestamp AND
+   *  A._sequence_num < B._sequence_num)
+   *
+   * @param sortKeys Optionals list of sort keys
+   * @param aliasLeft Alias of the left table to be used for comparison
+   * @param aliasRight Alias of the right table to be used for comparison
+   * @return ordering condition
+   */
+  private static String getOrderingCondition(Optional<List<Schema.Type>> sortKeys, String aliasLeft,
+                                             String aliasRight) {
+    StringBuilder condition = new StringBuilder();
+    if (sortKeys.isPresent()) {
+      int sortKeyCount = sortKeys.get().size();
+      String firstSortKey = Constants.SORT_KEYS + "." + Constants.SORT_KEY_FIELD + "_" + 0;
+      // A._sort._key_0 is NOT NULL AND B._sort._key_0 is NOT NULL
+      condition.append(
+              String.format(" AND (( %2$s.%1$s is NOT NULL AND %3$s.%1$s is NOT NULL AND (",
+                      firstSortKey, aliasLeft, aliasRight));
+
+      // Main condition for comparing sort keys
+      StringBuilder prefix = new StringBuilder("(");
+      for (int i = 0; i < sortKeyCount; i++) {
+        condition.append(prefix);
+        String fieldName = Constants.SORT_KEYS + "." + Constants.SORT_KEY_FIELD + "_" + i;
+        // A._sort._key_0 < B._sort._key_0
+        condition.append(String.format("%1$s.%3$s < %2$s.%3$s", aliasLeft, aliasRight, fieldName));
+        condition.append(")");
+        if (i != sortKeyCount - 1) {
+          condition.append(" OR \n");
+        }
+        // A._sort._key_0 = B._sort._key_0 AND
+        prefix.append(String.format("%1$s.%3$s = %2$s.%3$s  AND ", aliasLeft, aliasRight, fieldName));
+      }
+      condition.append("))");
+
+      // $BACKWARD_COMPAT_CONDITION in case sort key column is null for either row
+      condition.append(" OR \n");
+      // A._sort._key_0 is NULL AND B._sort._key_0 is NULL
+      condition.append(
+              String.format("(( %1$s.%3$s is NULL OR %2$s.%3$s is NULL )", aliasLeft, aliasRight, firstSortKey));
+      // A._source_timestamp < B._source_timestamp OR A._source_timestamp = B._source_timestamp AND
+      // A._sequence_num < B._sequence_num
+      condition.append(
+              String.format(" AND ( %1$s.%3$s < %2$s.%3$s OR ( %1$s.%3$s = %2$s.%3$s AND %1$s.%4$s < %2$s.%4$s ))))",
+                      aliasLeft, aliasRight, Constants.SOURCE_TIMESTAMP, Constants.SEQUENCE_NUM));
+    } else {
+      // Sort keys not available in schema, fallback to source timestamp and sequence num
+      // A._source_timestamp < B._source_timestamp OR A._source_timestamp = B._source_timestamp AND
+      // A._sequence_num < B._sequence_num
+      condition.append(String.format(" AND (%1$s.%3$s < %2$s.%3$s" +
+                      " OR (%1$s.%3$s = %2$s.%3$s AND %1$s.%4$s < %2$s.%4$s))",
+              aliasLeft, aliasRight, Constants.SOURCE_TIMESTAMP, Constants.SEQUENCE_NUM));
+    }
+    return condition.toString();
+  }
+
   private long getLatestSequenceNum(TableId tableId) throws InterruptedException, DeltaFailureException {
     RetryPolicy<Object> retryPolicy = createBaseRetryPolicy(baseRetryDelay)
       .onFailedAttempt(failureContext -> {
@@ -1296,6 +1410,58 @@ public class BigQueryEventConsumer implements EventConsumer {
       }
       throw e;
     }
+  }
+
+  private void addSortKeyToTargetTable(TableId targetTableId, List<Schema.Type> sortKeys) {
+    // Get the table, schema and fields from the already-existing table
+    Table table = bigQuery.getTable(targetTableId);
+    com.google.cloud.bigquery.Schema schema = table.getDefinition().getSchema();
+    FieldList fields = schema.getFields();
+    //check if fields already exists
+    if (fields.stream().noneMatch(f -> f.getName().equals(Constants.SORT_KEYS))) {
+      Schema.Field sortKeyField = Schema.Field.of(Constants.SORT_KEYS, Schemas.getSortKeysSchema(sortKeys));
+
+      List<Field> fieldList = new ArrayList<Field>(fields);
+      fieldList.add(Schemas.convertToBigQueryField(sortKeyField));
+      // Update the table with the new schema
+      com.google.cloud.bigquery.Schema updatedSchema = com.google.cloud.bigquery.Schema.of(fieldList);
+      table.toBuilder().setDefinition(StandardTableDefinition.of(updatedSchema)).build().update();
+    }
+    sortKeyStore.get(targetTableId).setAddedToTarget(true);
+  }
+
+  private void storeSortKeys(TableId tableId, List<SortKey> sortKeys) throws IOException, DeltaFailureException {
+    if (sortKeys != null && !sortKeys.isEmpty()) {
+      List<Schema.Type> sortKeyTypes = sortKeys.stream()
+              .map(SortKey::getType).collect(Collectors.toList());
+      sortKeyStore.put(tableId, new SortKeyState(sortKeyTypes));
+      context.putState(getTableStateKey(tableId),
+              Bytes.toBytes(GSON.toJson(new BigQueryTableState(getPrimaryKeys(tableId), sortKeyTypes))));
+    }
+  }
+
+  private Optional<List<Schema.Type>> getSortKeys(TableId tableId) throws IOException {
+    SortKeyState sortKeyState = sortKeyStore.get(tableId);
+    if (sortKeyState == null) {
+      byte[] stateBytes = context.getState(getTableStateKey(tableId));
+      if (stateBytes != null) {
+        BigQueryTableState targetTableState = GSON.fromJson(new String(stateBytes), BigQueryTableState.class);
+        if (targetTableState.getSortKeys() != null) {
+          sortKeyState = new SortKeyState(targetTableState.getSortKeys());
+          sortKeyStore.put(tableId, sortKeyState);
+        }
+      }
+    }
+    return Optional.ofNullable(sortKeyState != null ? sortKeyState.getSortKeys() : null);
+  }
+
+  private Optional<List<Schema.Type>> getCachedSortKeys(TableId targetTableId) throws IOException {
+    SortKeyState sortKeyState = sortKeyStore.get(targetTableId);
+    return Optional.ofNullable(sortKeyState != null ? sortKeyState.getSortKeys() : null);
+  }
+
+  private String getTableStateKey(TableId tableId) {
+    return String.format("bigquery-%s-%s", tableId.getDataset(), tableId.getTable());
   }
 
   /**
