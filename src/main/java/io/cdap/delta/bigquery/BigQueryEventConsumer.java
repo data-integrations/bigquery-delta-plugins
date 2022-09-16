@@ -350,7 +350,7 @@ public class BigQueryEventConsumer implements EventConsumer {
         // because of some failure scenario. Delete the existing table if any.
         byte[] state = context.getState(String.format(DIRECT_LOADING_IN_PROGRESS_PREFIX + "%s-%s",
                                                       normalizedDatabaseName, normalizedTableName));
-        if (table != null && state != null && Bytes.toBoolean(state)) {
+        if (table != null && state != null && state.length != 0 && Bytes.toBoolean(state)) {
           bigQuery.delete(tableId);
         }
         List<String> primaryKeys = event.getPrimaryKey();
