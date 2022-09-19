@@ -37,7 +37,7 @@ public class BigQueryTableState {
   private List<Schema.Type> sortKeys;
 
   public BigQueryTableState(List<String> primaryKeys) {
-    this.primaryKeys = Collections.unmodifiableList(new ArrayList<>(primaryKeys));
+    this(primaryKeys, null);
   }
 
   public BigQueryTableState(List<String> primaryKeys, List<Schema.Type> sortKeys) {

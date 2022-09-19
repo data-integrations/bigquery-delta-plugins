@@ -501,7 +501,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
     primaryKeyStore.put(tableId, primaryKeys);
     context.putState(getTableStateKey(tableId),
-                     Bytes.toBytes(GSON.toJson(new BigQueryTableState(primaryKeys))));
+            Bytes.toBytes(GSON.toJson(new BigQueryTableState(primaryKeys, getSortKeys(tableId)))));
   }
 
   private List<String> getPrimaryKeys(TableId targetTableId) throws IOException, DeltaFailureException {
@@ -527,9 +527,9 @@ public class BigQueryEventConsumer implements EventConsumer {
     fields.add(Schema.Field.of(Constants.ROW_ID, Schema.nullableOf(Schema.of(Schema.Type.STRING))));
     fields.add(Schema.Field.of(Constants.SOURCE_TIMESTAMP, Schema.nullableOf(Schema.of(Schema.Type.LONG))));
     if (sourceEventOrdering == SourceProperties.Ordering.UN_ORDERED) {
-      Optional<List<Schema.Type>> sortKeys = getSortKeys(tableId);
-      if (sortKeys.isPresent()) {
-        fields.add(Schema.Field.of(Constants.SORT_KEYS, Schemas.getSortKeysSchema(sortKeys.get())));
+      List<Schema.Type> sortKeys = getSortKeys(tableId);
+      if (sortKeys != null) {
+        fields.add(Schema.Field.of(Constants.SORT_KEYS, Schemas.getSortKeysSchema(sortKeys)));
       }
     }
     fields.addAll(original.getFields());
@@ -1440,7 +1440,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
   }
 
-  private Optional<List<Schema.Type>> getSortKeys(TableId tableId) throws IOException {
+  private List<Schema.Type> getSortKeys(TableId tableId) throws IOException {
     SortKeyState sortKeyState = sortKeyStore.get(tableId);
     if (sortKeyState == null) {
       byte[] stateBytes = context.getState(getTableStateKey(tableId));
@@ -1452,7 +1452,7 @@ public class BigQueryEventConsumer implements EventConsumer {
         }
       }
     }
-    return Optional.ofNullable(sortKeyState != null ? sortKeyState.getSortKeys() : null);
+    return sortKeyState != null ? sortKeyState.getSortKeys() : null;
   }
 
   private Optional<List<Schema.Type>> getCachedSortKeys(TableId targetTableId) throws IOException {
