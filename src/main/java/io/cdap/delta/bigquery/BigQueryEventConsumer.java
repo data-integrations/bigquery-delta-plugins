@@ -752,7 +752,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     JobInfo jobInfo = JobInfo.newBuilder(loadJobConf)
       .setJobId(jobId)
       .build();
-    Job loadJob = bigQuery.create(jobInfo);
+    Job loadJob = BigQueryUtils.createBigQueryJob(bigQuery, jobInfo);
     Job completedJob = loadJob.waitFor();
     if (completedJob == null) {
       // should not happen since we just submitted the job
@@ -977,7 +977,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     JobInfo jobInfo = JobInfo.newBuilder(mergeJobConf)
       .setJobId(jobId)
       .build();
-    Job mergeJob = bigQuery.create(jobInfo);
+    Job mergeJob = BigQueryUtils.createBigQueryJob(bigQuery, jobInfo);
     Job completedJob = mergeJob.waitFor();
     if (completedJob == null) {
       // should not happen since we just submitted the job

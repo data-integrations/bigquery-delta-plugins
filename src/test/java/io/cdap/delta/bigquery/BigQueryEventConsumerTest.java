@@ -731,7 +731,7 @@ public class BigQueryEventConsumerTest {
   private TableResult executeQuery(String query) throws InterruptedException {
     QueryJobConfiguration jobConfig = QueryJobConfiguration.of(query);
     JobId jobId = JobId.of(UUID.randomUUID().toString());
-    Job queryJob = bigQuery.create(JobInfo.newBuilder(jobConfig).setJobId(jobId).build());
+    Job queryJob = BigQueryUtils.createBigQueryJob(bigQuery, JobInfo.newBuilder(jobConfig).setJobId(jobId).build());
     queryJob.waitFor();
     return queryJob.getQueryResults();
   }
