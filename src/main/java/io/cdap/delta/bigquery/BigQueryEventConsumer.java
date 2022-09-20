@@ -1444,7 +1444,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     SortKeyState sortKeyState = sortKeyStore.get(tableId);
     if (sortKeyState == null) {
       byte[] stateBytes = context.getState(getTableStateKey(tableId));
-      if (stateBytes != null) {
+      if (stateBytes != null && stateBytes.length > 0) {
         BigQueryTableState targetTableState = GSON.fromJson(new String(stateBytes), BigQueryTableState.class);
         if (targetTableState.getSortKeys() != null) {
           sortKeyState = new SortKeyState(targetTableState.getSortKeys());

@@ -42,7 +42,9 @@ public class BigQueryTableState {
 
   public BigQueryTableState(List<String> primaryKeys, List<Schema.Type> sortKeys) {
     this.primaryKeys = Collections.unmodifiableList(new ArrayList<>(primaryKeys));
-    this.sortKeys = Collections.unmodifiableList(new ArrayList<>(sortKeys));
+    if (sortKeys != null) {
+      this.sortKeys = Collections.unmodifiableList(new ArrayList<>(sortKeys));
+    }
   }
 
   public List<String> getPrimaryKeys() {
