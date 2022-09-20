@@ -17,6 +17,7 @@
 package io.cdap.delta.bigquery;
 
 import com.google.cloud.bigquery.BigQuery;
+import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.EncryptionConfiguration;
 import com.google.cloud.bigquery.FieldValue;
 import com.google.cloud.bigquery.FieldValueList;
@@ -32,6 +33,8 @@ import io.cdap.cdap.api.data.format.StructuredRecord;
 import io.cdap.cdap.api.data.schema.Schema;
 import io.cdap.delta.api.DMLEvent;
 import io.cdap.delta.api.SourceTable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -47,6 +50,7 @@ import javax.annotation.Nullable;
  * Utility class for executing queries on BigQuery.
  */
 public final class BigQueryUtils {
+  private static final Logger LOG = LoggerFactory.getLogger(BigQueryUtils.class);
   public static final int FIELD_NAME_MAX_LENGTH = 128;
   static final String BACKTICK = "`";
   private static final int DATASET_OR_TABLE_NAME_MAX_LENGTH = 1024;
@@ -54,6 +58,7 @@ public final class BigQueryUtils {
   // lower case), numbers, and underscores
   private static final String VALID_NAME_REGEX = "[\\w]+";
   private static final String INVALID_NAME_REGEX = "[^\\w]+";
+  private static final String BIG_QUERY_DUPLICATE_ERROR = "duplicate";
 
   private BigQueryUtils() {
   }
@@ -138,7 +143,7 @@ public final class BigQueryUtils {
     }
     QueryJobConfiguration jobConfig = jobConfigBuilder.build();
     JobId jobId = JobId.of(UUID.randomUUID().toString());
-    Job queryJob = bigQuery.create(JobInfo.newBuilder(jobConfig).setJobId(jobId).build());
+    Job queryJob = createBigQueryJob(bigQuery, JobInfo.newBuilder(jobConfig).setJobId(jobId).build());
     queryJob.waitFor();
     TableResult result = queryJob.getQueryResults();
     Iterator<FieldValueList> resultIter = result.iterateAll().iterator();
@@ -236,5 +241,23 @@ public final class BigQueryUtils {
 
   static String wrapInBackTick(String datasetName, String tableName) {
     return BACKTICK + datasetName + "." + tableName + BACKTICK;
+  }
+
+  /**
+   * Tries to submit a BQ job. If there is an Already Exists Exception, it will fetch the existing job
+   * @param bigquery
+   * @param jobInfo
+   * @return BQ Job
+   */
+  public static Job createBigQueryJob(BigQuery bigquery, JobInfo jobInfo) {
+    try {
+      return bigquery.create(jobInfo);
+    } catch (BigQueryException e) {
+      if (e.getCode() == 409 && BIG_QUERY_DUPLICATE_ERROR.equalsIgnoreCase(e.getReason())) {
+        LOG.warn("Got JOB ALREADY EXISTS for the job id : " + jobInfo.getJobId() + ". Returning existing job");
+        return bigquery.getJob(jobInfo.getJobId());
+      }
+      throw e;
+    }
   }
 }
