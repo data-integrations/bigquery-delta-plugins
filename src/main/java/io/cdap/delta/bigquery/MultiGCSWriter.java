@@ -28,6 +28,7 @@ import io.cdap.delta.api.DMLOperation;
 import io.cdap.delta.api.DeltaTargetContext;
 import io.cdap.delta.api.ReplicationError;
 import io.cdap.delta.api.Sequenced;
+import io.cdap.delta.api.SortKey;
 import io.cdap.delta.api.SourceProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,6 +45,7 @@ import java.util.Objects;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
+import java.util.stream.Collectors;
 import javax.annotation.Nullable;
 
 /**
@@ -258,8 +260,8 @@ public class MultiGCSWriter {
       DMLEvent event = sequencedEvent.getEvent();
       StructuredRecord row = event.getRow();
       if (eventWriter == null) {
-        targetSchema = getTargetSchema(row.getSchema());
-        stagingSchema = getStagingSchema(row.getSchema());
+        targetSchema = getTargetSchema(row.getSchema(), event);
+        stagingSchema = getStagingSchema(row.getSchema(), event);
 
         if (jsonFormat) {
           eventWriter = new JsonEventWriter(outputStream);
@@ -294,13 +296,18 @@ public class MultiGCSWriter {
       }
     }
 
-    private Schema getTargetSchema(Schema schema) {
+    private Schema getTargetSchema(Schema schema, DMLEvent event) {
       List<Schema.Field> fields = new ArrayList<>(schema.getFields().size() + 4);
       fields.addAll(schema.getFields());
       fields.add(Schema.Field.of(Constants.SEQUENCE_NUM, Schema.of(Schema.Type.LONG)));
       fields.add(Schema.Field.of(Constants.IS_DELETED, Schema.nullableOf(Schema.of(Schema.Type.BOOLEAN))));
       fields.add(Schema.Field.of(Constants.ROW_ID, Schema.nullableOf(Schema.of(Schema.Type.STRING))));
       fields.add(Schema.Field.of(Constants.SOURCE_TIMESTAMP, Schema.nullableOf(Schema.of(Schema.Type.LONG))));
+      if (eventOrdering == SourceProperties.Ordering.UN_ORDERED) {
+        if (Objects.nonNull(event.getSortKeys()) && !event.getSortKeys().isEmpty()) {
+          fields.add(getSortKeyField(event.getSortKeys()));
+        }
+      }
       return Schema.recordOf(schema.getRecordName() + ".target", fields);
     }
 
@@ -329,17 +336,19 @@ public class MultiGCSWriter {
           _batch_id (long)
           _sequence_num (long)
           _row_id (string)
+          _source_timestamp
+          _sort (record)
           id (long)
           name (string)
      */
-    private Schema getStagingSchema(Schema schema) {
+    private Schema getStagingSchema(Schema schema, DMLEvent event) {
       int fieldLength =
         rowIdSupported ? schema.getFields().size() + 4 // source schema fields + _op, _batch_id, _sequence_num, _row_id
           : 2 * schema.getFields().size() + 3; // (source schema + _before_ columns) + _op, _batch_id, _sequence_num
 
       if (eventOrdering == SourceProperties.Ordering.UN_ORDERED) {
-        // add column _source_timestamp
-        fieldLength++;
+        // add column _source_timestamp, _sort
+        fieldLength += 2;
       }
       List<Schema.Field> fields = new ArrayList<>(fieldLength);
 
@@ -348,6 +357,9 @@ public class MultiGCSWriter {
       fields.add(Schema.Field.of(Constants.SEQUENCE_NUM, Schema.of(Schema.Type.LONG)));
       if (eventOrdering == SourceProperties.Ordering.UN_ORDERED) {
         fields.add(Schema.Field.of(Constants.SOURCE_TIMESTAMP, Schema.of(Schema.Type.LONG)));
+        if (Objects.nonNull(event.getSortKeys()) && !event.getSortKeys().isEmpty()) {
+          fields.add(getSortKeyField(event.getSortKeys()));
+        }
       }
 
       // add all fields from source schema
@@ -389,6 +401,15 @@ public class MultiGCSWriter {
 
       if (eventOrdering == SourceProperties.Ordering.UN_ORDERED) {
         builder.set(Constants.SOURCE_TIMESTAMP, event.getSourceTimestampMillis());
+        if (targetSchema.getField(Constants.SORT_KEYS) != null) {
+          Schema sortKeysSchema = targetSchema.getField(Constants.SORT_KEYS).getSchema();
+          StructuredRecord.Builder sortKeysBuilder = StructuredRecord.builder(sortKeysSchema);
+          List<Schema.Field> fields = sortKeysSchema.getFields();
+          for (int i = 0; i < fields.size(); i++) {
+            sortKeysBuilder.set(fields.get(i).getName(), event.getSortKeys().get(i).getValue());
+          }
+          builder.set(Constants.SORT_KEYS, sortKeysBuilder.build());
+        }
       }
 
       if (rowIdSupported) {
@@ -419,5 +440,11 @@ public class MultiGCSWriter {
       }
       return builder.build();
     }
+  }
+
+  private Schema.Field getSortKeyField(List<SortKey> sortKeys) {
+    List<Schema.Type> sortKeyTypes = sortKeys.stream()
+            .map(SortKey::getType).collect(Collectors.toList());
+    return Schema.Field.of(Constants.SORT_KEYS, Schemas.getSortKeysSchema(sortKeyTypes));
   }
 }

@@ -114,7 +114,7 @@ public class Schemas {
     return CLUSTERING_SUPPORTED_TYPES.contains(bigQueryField.getType().getStandardType());
   }
 
-  private static Field convertToBigQueryField(Schema.Field field) {
+  public static Field convertToBigQueryField(Schema.Field field) {
     String normalizedName = BigQueryUtils.normalizeFieldName(field.getName());
     boolean isNullable = field.getSchema().isNullable();
     Schema fieldSchema = field.getSchema();
@@ -151,11 +151,21 @@ public class Schemas {
       StandardSQLTypeName bqType = convertType(type);
       if (bqType == null) {
         throw new IllegalArgumentException(
-          String.format("Field '%s' is of type '%s', which is not supported in BigQuery.",
+                String.format("Field '%s' is of type '%s', which is not supported in BigQuery.",
                         normalizedName, type.name().toLowerCase()));
       }
       output = Field.newBuilder(normalizedName, bqType).setMode(fieldMode).build();
     }
     return output;
+  }
+
+  public static Schema getSortKeysSchema(List<Schema.Type> sortKeys) {
+    List<Schema.Field> fields = new ArrayList<>();
+    for (int i = 0; i < sortKeys.size(); i++) {
+      String fieldName = Constants.SORT_KEY_FIELD + "_" + i;
+      fields.add(Schema.Field.of(fieldName,
+              Schema.nullableOf(Schema.of(sortKeys.get(i)))));
+    }
+    return Schema.recordOf(Constants.SORT_KEYS, fields);
   }
 }
