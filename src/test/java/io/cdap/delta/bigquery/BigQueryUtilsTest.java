@@ -17,10 +17,13 @@
 
 package io.cdap.delta.bigquery;
 
+import com.google.api.gax.paging.Page;
 import com.google.auth.Credentials;
 import com.google.auth.oauth2.GoogleCredentials;
+import com.google.cloud.PageImpl;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryOptions;
+import com.google.cloud.bigquery.Dataset;
 import com.google.cloud.bigquery.DatasetId;
 import com.google.cloud.bigquery.DatasetInfo;
 import com.google.cloud.bigquery.Field;
@@ -32,6 +35,7 @@ import com.google.cloud.bigquery.Table;
 import com.google.cloud.bigquery.TableDefinition;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
+import com.google.cloud.bigquery.TableResult;
 import com.google.common.base.Strings;
 import io.cdap.delta.api.SourceTable;
 import org.junit.AfterClass;
@@ -52,7 +56,10 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
@@ -69,19 +76,21 @@ public class BigQueryUtilsTest {
 
   private static final String DATASET = "demodataset";
   private static final String TABLE_PREFIX = "demotable_";
+  private static final String PROJECT = "testproject";
 
   @PrepareForTest(BigQueryUtils.class)
   @RunWith(PowerMockRunner.class)
   public static class LocalIndependentTests {
     private BigQuery bigQueryMock;
-    private Table tableMock;
 
     @Before
     public void init() throws Exception {
       //Mocks
       bigQueryMock = Mockito.mock(BigQuery.class);
-      tableMock = Mockito.mock(Table.class);
+      Table tableMock = Mockito.mock(Table.class);
+      Dataset datasetMock = Mockito.mock(Dataset.class);
       Mockito.when(bigQueryMock.getTable(ArgumentMatchers.any())).thenReturn(tableMock);
+      Mockito.when(bigQueryMock.getDataset("demodataset")).thenReturn(datasetMock);
       PowerMockito.spy(BigQueryUtils.class);
 
       //Stubs
@@ -155,7 +164,8 @@ public class BigQueryUtilsTest {
     public void testGetMaximumExistingSequenceNumberZeroInvocations() throws Exception {
       // Zero Tables
       Set<SourceTable> allTables = generateSourceTableSet(0);
-      long tableResult0 = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, "testproject",
+      Mockito.when(bigQueryMock.listTables(ArgumentMatchers.anyString())).thenReturn(generateBQTablesPage(0));
+      long tableResult0 = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, PROJECT,
                                                                          null, bigQueryMock, null, 1000);
       assertEquals(0L, tableResult0);
       PowerMockito.verifyPrivate(BigQueryUtils.class, times(0))
@@ -169,7 +179,8 @@ public class BigQueryUtilsTest {
 
       // Subtest : One Table
       Set<SourceTable> allTables = generateSourceTableSet(1);
-      long tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, "testproject",
+      Mockito.when(bigQueryMock.listTables(ArgumentMatchers.anyString())).thenReturn(generateBQTablesPage(1));
+      long tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, PROJECT,
                                                                         null, bigQueryMock, null, 1000);
       assertEquals(1L, tableResult);
       PowerMockito.verifyPrivate(BigQueryUtils.class, times(1))
@@ -178,7 +189,8 @@ public class BigQueryUtilsTest {
 
       // Subtest2 : Ten Tables
       allTables = generateSourceTableSet(10);
-      tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, "testproject",
+      Mockito.when(bigQueryMock.listTables(ArgumentMatchers.anyString())).thenReturn(generateBQTablesPage(10));
+      tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, PROJECT,
                                                                    null, bigQueryMock, null, 1000);
       assertEquals(2L, tableResult);
       PowerMockito.verifyPrivate(BigQueryUtils.class, times(2))
@@ -187,7 +199,8 @@ public class BigQueryUtilsTest {
 
       // Subtest3 : 1000 Tables
       allTables = generateSourceTableSet(1000);
-      tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, "testproject",
+      Mockito.when(bigQueryMock.listTables(ArgumentMatchers.anyString())).thenReturn(generateBQTablesPage(1000));
+      tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, PROJECT,
                                                                    null, bigQueryMock, null, 1000);
       assertEquals(3L, tableResult);
       PowerMockito.verifyPrivate(BigQueryUtils.class, times(3))
@@ -201,7 +214,8 @@ public class BigQueryUtilsTest {
 
       //Subtest1 :  1001 Tables : Should call bigquery 2 times. 1000+1
       Set<SourceTable> allTables = generateSourceTableSet(1001);
-      long tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, "testproject",
+      Mockito.when(bigQueryMock.listTables(ArgumentMatchers.anyString())).thenReturn(generateBQTablesPage(1001));
+      long tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, PROJECT,
                                                                         null, bigQueryMock, null, 1000);
       assertEquals(2L, tableResult);
       PowerMockito.verifyPrivate(BigQueryUtils.class, times(2))
@@ -210,7 +224,8 @@ public class BigQueryUtilsTest {
 
       //Subtest2 :  2000 Tables : Should call bigquery 2 times. 1000+1000
       allTables = generateSourceTableSet(2000);
-      tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, "testproject",
+      Mockito.when(bigQueryMock.listTables(ArgumentMatchers.anyString())).thenReturn(generateBQTablesPage(2000));
+      tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, PROJECT,
                                                                    null, bigQueryMock, null, 1000);
       assertEquals(4L, tableResult);
       PowerMockito.verifyPrivate(BigQueryUtils.class, times(4))
@@ -224,7 +239,8 @@ public class BigQueryUtilsTest {
 
       //Subtest1 :  2500 Tables : Should call bigquery 3 times. 1000+1000+500
       Set<SourceTable> allTables = generateSourceTableSet(2500);
-      long tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, "testproject",
+      Mockito.when(bigQueryMock.listTables(ArgumentMatchers.anyString())).thenReturn(generateBQTablesPage(2500));
+      long tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, PROJECT,
                                                                         null, bigQueryMock, null, 1000);
       assertEquals(3L, tableResult);
       PowerMockito.verifyPrivate(BigQueryUtils.class, times(3))
@@ -349,5 +365,46 @@ public class BigQueryUtilsTest {
                                     null, null, new HashSet<>(), new HashSet<>()));
     }
     return allTables;
+  }
+
+  private static Page<Table> generateBQTablesPage(int num) {
+    Page<Table> pg = new Page<Table>() {
+      @Override
+      public boolean hasNextPage() {
+        return false;
+      }
+
+      @Override
+      public String getNextPageToken() {
+        return null;
+      }
+
+      @Override
+      public Page<Table> getNextPage() {
+        return null;
+      }
+
+      @Override
+      public Iterable<Table> iterateAll() {
+        List<Table> tableList = new ArrayList<>();
+
+        for (int i = 1; i <= num; i++) {
+          // Create Table
+          Table tableMock2 = Mockito.mock(Table.class);
+
+          String tableName = TABLE_PREFIX + i;
+          TableId tableId = TableId.of(PROJECT, DATASET, tableName);
+          Mockito.when(tableMock2.getTableId()).thenReturn(tableId);
+          tableList.add(tableMock2);
+        }
+        return tableList;
+      }
+
+      @Override
+      public Iterable<Table> getValues() {
+        return null;
+      }
+    };
+    return pg;
   }
 }
