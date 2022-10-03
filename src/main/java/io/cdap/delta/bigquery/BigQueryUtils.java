@@ -25,6 +25,7 @@ import com.google.cloud.bigquery.Job;
 import com.google.cloud.bigquery.JobId;
 import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.QueryJobConfiguration;
+import com.google.cloud.bigquery.Table;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableResult;
 import com.google.common.collect.Iterables;
@@ -42,6 +43,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -100,13 +102,23 @@ public final class BigQueryUtils {
   static long getMaximumExistingSequenceNumberPerBatch(Set<SourceTable> allTables, String project,
                                                        @Nullable String datasetName, BigQuery bigQuery,
                                                        EncryptionConfiguration encryptionConfiguration) {
+    SourceTable table0 = allTables.stream().findFirst().get();
+    Set<TableId> existingTableIDs = new HashSet<>();
+    String dataset = datasetName != null ? normalizeDatasetName(datasetName) :
+      normalizeDatasetName(table0.getDatabase());
+    if (bigQuery.getDataset(dataset) != null) {
+      for (Table table : bigQuery.listTables(dataset).iterateAll()) {
+        existingTableIDs.add(table.getTableId());
+      }
+    }
+
     StringBuilder builder = new StringBuilder();
     builder.append("SELECT MAX(max_sequence_num) FROM (");
     List<String> maxSequenceNumQueryPerTable = new ArrayList<>();
     for (SourceTable table : allTables) {
       TableId tableId = TableId.of(project, datasetName != null ? normalizeDatasetName(datasetName) :
         normalizeDatasetName(table.getDatabase()), normalizeTableName(table.getTable()));
-      if (bigQuery.getTable(tableId) != null) {
+      if (existingTableIDs.contains(tableId)) {
         maxSequenceNumQueryPerTable.add(String.format("SELECT MAX(_sequence_num) as max_sequence_num FROM %s",
                                                       wrapInBackTick(tableId.getDataset(), tableId.getTable())));
       }
