@@ -63,6 +63,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
@@ -84,7 +85,7 @@ import java.util.concurrent.TimeoutException;
  * Tests for BigQueryEventConsumer. In order to run these tests, service account credentials must be set in the system
  * properties. The service account must have permission to create and write to BigQuery datasets and tables,
  * as well as permission to write to GCS.
- *
+ * <p>
  * The tests create real resources in GCP and will cost some small amount of money for each run.
  */
 public class BigQueryEventConsumerTest {
@@ -93,6 +94,7 @@ public class BigQueryEventConsumerTest {
     Schema.Field.of("id", Schema.of(Schema.Type.INT)),
     Schema.Field.of("name", Schema.of(Schema.Type.STRING)),
     Schema.Field.of("created", Schema.of(Schema.LogicalType.TIMESTAMP_MILLIS)),
+    Schema.Field.of("updated", Schema.nullableOf(Schema.of(Schema.LogicalType.DATETIME))),
     Schema.Field.of("bday", Schema.of(Schema.LogicalType.DATE)),
     Schema.Field.of("score", Schema.nullableOf(Schema.of(Schema.Type.DOUBLE))),
     Schema.Field.of("partition", Schema.nullableOf(Schema.of(Schema.Type.INT))));
@@ -794,6 +796,8 @@ public class BigQueryEventConsumerTest {
       .set("id", 0)
       .set("name", "alice")
       .setTimestamp("created", ZonedDateTime.ofInstant(Instant.EPOCH, ZoneId.of("UTC")))
+      //check nano precision value is correctly handled, minusNanos is required otherwise zeroes in nanos are truncated
+      .setDateTime("updated", LocalDateTime.ofInstant(Instant.now(), ZoneId.of("UTC")).minusNanos(1))
       .setDate("bday", LocalDate.ofEpochDay(0))
       .set("score", 0.0d)
       .build();
@@ -814,6 +818,7 @@ public class BigQueryEventConsumerTest {
       .set("id", 1)
       .set("name", "bob")
       .setTimestamp("created", ZonedDateTime.ofInstant(Instant.ofEpochSecond(86400), ZoneId.of("UTC")))
+      .setDateTime("updated", LocalDateTime.ofInstant(Instant.now(), ZoneId.of("UTC")).minusNanos(1))
       .setDate("bday", LocalDate.ofEpochDay(1))
       .set("score", 1.0d)
       .build();
