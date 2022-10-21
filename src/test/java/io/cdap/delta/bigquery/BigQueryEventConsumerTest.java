@@ -66,6 +66,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -818,7 +819,8 @@ public class BigQueryEventConsumerTest {
       .set("id", 1)
       .set("name", "bob")
       .setTimestamp("created", ZonedDateTime.ofInstant(Instant.ofEpochSecond(86400), ZoneId.of("UTC")))
-      .setDateTime("updated", LocalDateTime.ofInstant(Instant.now(), ZoneId.of("UTC")).minusNanos(1))
+      .setDateTime("updated", LocalDateTime.ofInstant(Instant.now().truncatedTo(ChronoUnit.SECONDS),
+                                                      ZoneId.of("UTC")))
       .setDate("bday", LocalDate.ofEpochDay(1))
       .set("score", 1.0d)
       .build();

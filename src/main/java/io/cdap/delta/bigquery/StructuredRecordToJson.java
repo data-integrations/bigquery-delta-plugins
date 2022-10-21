@@ -62,7 +62,6 @@ public final class StructuredRecordToJson {
    */
   private static final Pattern LOGICAL_DATE_PATTERN =
     Pattern.compile("\\d{4}-\\d{1,2}-\\d{1,2}([ T]\\d{1,2}:\\d{1,2}:\\d{1,2}(\\.(\\d+))?)?");
-  private static final int LOGICAL_DATE_WITH_TIMEFRACTION_GROUP_COUNT = 3;
   private static final int TIME_FRACTION_GROUP = 3;
 
   /**
@@ -210,17 +209,15 @@ public final class StructuredRecordToJson {
   private static String checkAndTrimToMaxSupportedPrecision(String strValue) {
     Matcher matcher = LOGICAL_DATE_PATTERN.matcher(strValue);
     if (matcher.matches()) {
-      if (matcher.groupCount() == LOGICAL_DATE_WITH_TIMEFRACTION_GROUP_COUNT) {
-        String timeFraction = matcher.group(TIME_FRACTION_GROUP);
-        //matcher.group returns null for a group if an optional group did not exist in the string
-        if (timeFraction != null) {
-          if (timeFraction.length() > MAX_LOGICAL_DATE_TIME_FRACTION_PRECISION) {
-            //Trim the time fraction to max supported precision
-            String trimmedTimeFraction = timeFraction.substring(0, MAX_LOGICAL_DATE_TIME_FRACTION_PRECISION);
-            strValue = new StringBuilder(strValue)
-              .replace(matcher.start(TIME_FRACTION_GROUP), matcher.end(TIME_FRACTION_GROUP), trimmedTimeFraction)
-              .toString();
-          }
+      String timeFraction = matcher.group(TIME_FRACTION_GROUP);
+      //matcher.group returns null for a group if an optional group did not exist in the string
+      if (timeFraction != null) {
+        if (timeFraction.length() > MAX_LOGICAL_DATE_TIME_FRACTION_PRECISION) {
+          //Trim the time fraction to max supported precision
+          String trimmedTimeFraction = timeFraction.substring(0, MAX_LOGICAL_DATE_TIME_FRACTION_PRECISION);
+          strValue = new StringBuilder(strValue)
+            .replace(matcher.start(TIME_FRACTION_GROUP), matcher.end(TIME_FRACTION_GROUP), trimmedTimeFraction)
+            .toString();
         }
       }
     } else {
