@@ -223,7 +223,7 @@ public final class StructuredRecordToJson {
     } else {
       //Don't throw exception for now as we might be missing some scenario in the format
       //Let it fail during BigQuery insert in case of wrong format
-      LOG.error("Invalid value {} for DATETIME type, it should match the " +
+      LOG.warn("Invalid value {} for DATETIME type, it should match the " +
                   "format YYYY-[M]M-[D]D[( |T)[H]H:[M]M:[S]S[.F]]", strValue);
     }
     return strValue;
