@@ -20,6 +20,8 @@ import com.google.gson.stream.JsonWriter;
 import io.cdap.cdap.api.common.Bytes;
 import io.cdap.cdap.api.data.format.StructuredRecord;
 import io.cdap.cdap.api.data.schema.Schema;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -39,22 +41,35 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import javax.annotation.Nullable;
 
 /**
  * Util class to convert structured record into json.
  */
 public final class StructuredRecordToJson {
+  private static final Logger LOG = LoggerFactory.getLogger(StructuredRecordToJson.class);
+
   private static final DateTimeFormatter DATETIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS");
   private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss.SSSSSS");
   // array of arrays and map of arrays are not supported by big query
   private static final Set<Schema.Type> UNSUPPORTED_ARRAY_TYPES = ImmutableSet.of(Schema.Type.ARRAY, Schema.Type.MAP);
 
+  private static final int MAX_LOGICAL_DATE_TIME_FRACTION_PRECISION = 6;
+  /* BigQuery format for DateTime: YYYY-[M]M-[D]D[( |T)[H]H:[M]M:[S]S[.F]]
+   * [.F]: Up to six fractional digits (microsecond precision)
+   */
+  private static final Pattern LOGICAL_DATE_PATTERN =
+    Pattern.compile("\\d{4}-\\d{1,2}-\\d{1,2}([ T]\\d{1,2}:\\d{1,2}:\\d{1,2}(\\.(\\d+))?)?");
+  private static final int TIME_FRACTION_GROUP = 3;
+
   /**
    * Writes object and writes to json writer.
-   * @param writer json writer to write the object to
-   * @param name name of the field to be written
-   * @param object object to be written
+   *
+   * @param writer      json writer to write the object to
+   * @param name        name of the field to be written
+   * @param object      object to be written
    * @param fieldSchema field schema to be written
    */
   public static void write(JsonWriter writer, String name, Object object, Schema fieldSchema) throws IOException {
@@ -143,8 +158,14 @@ public final class StructuredRecordToJson {
           writer.value(Objects.requireNonNull(getDecimal((byte[]) object, schema)).toPlainString());
           break;
         case DATETIME:
-          //datetime should be already an ISO-8601 string
-          writer.value(Objects.requireNonNull(object.toString()));
+          String strValue = object.toString();
+          // Datetime should be already an ISO-8601 string
+          // But BigQuery format is stricter than ISO-8601 and does not support Zone and Offset
+          // Hence it is more closer to DateTimeFormatter.ISO_LOCAL_DATE_TIME but with microsecond precision
+          // Check if the value matches expected format for DateTime and trim time fraction to
+          // MAX_TIME_FRACTION_PRECISION if it exceeds it
+          strValue = checkAndTrimToMaxSupportedPrecision(strValue);
+          writer.value(Objects.requireNonNull(strValue));
           break;
         default:
           throw new IllegalStateException(
@@ -183,6 +204,27 @@ public final class StructuredRecordToJson {
         throw new IllegalStateException(String.format("Field '%s' is of unsupported type '%s'",
                                                       name, schema.getType()));
     }
+  }
+
+  private static String checkAndTrimToMaxSupportedPrecision(String strValue) {
+    Matcher matcher = LOGICAL_DATE_PATTERN.matcher(strValue);
+    if (matcher.matches()) {
+      String timeFraction = matcher.group(TIME_FRACTION_GROUP);
+      //matcher.group returns null for a group if an optional group did not exist in the string
+      if (timeFraction != null && timeFraction.length() > MAX_LOGICAL_DATE_TIME_FRACTION_PRECISION) {
+        //Trim the time fraction to max supported precision
+        String trimmedTimeFraction = timeFraction.substring(0, MAX_LOGICAL_DATE_TIME_FRACTION_PRECISION);
+        strValue = new StringBuilder(strValue)
+          .replace(matcher.start(TIME_FRACTION_GROUP), matcher.end(TIME_FRACTION_GROUP), trimmedTimeFraction)
+          .toString();
+      }
+    } else {
+      //Don't throw exception for now as we might be missing some scenario in the format
+      //Let it fail during BigQuery insert in case of wrong format
+      LOG.warn("Invalid value {} for DATETIME type, it should match the " +
+                 "format YYYY-[M]M-[D]D[( |T)[H]H:[M]M:[S]S[.F]]", strValue);
+    }
+    return strValue;
   }
 
   private static void writeArray(JsonWriter writer,
