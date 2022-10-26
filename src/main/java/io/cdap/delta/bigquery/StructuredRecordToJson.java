@@ -211,20 +211,18 @@ public final class StructuredRecordToJson {
     if (matcher.matches()) {
       String timeFraction = matcher.group(TIME_FRACTION_GROUP);
       //matcher.group returns null for a group if an optional group did not exist in the string
-      if (timeFraction != null) {
-        if (timeFraction.length() > MAX_LOGICAL_DATE_TIME_FRACTION_PRECISION) {
-          //Trim the time fraction to max supported precision
-          String trimmedTimeFraction = timeFraction.substring(0, MAX_LOGICAL_DATE_TIME_FRACTION_PRECISION);
-          strValue = new StringBuilder(strValue)
-            .replace(matcher.start(TIME_FRACTION_GROUP), matcher.end(TIME_FRACTION_GROUP), trimmedTimeFraction)
-            .toString();
-        }
+      if (timeFraction != null && timeFraction.length() > MAX_LOGICAL_DATE_TIME_FRACTION_PRECISION) {
+        //Trim the time fraction to max supported precision
+        String trimmedTimeFraction = timeFraction.substring(0, MAX_LOGICAL_DATE_TIME_FRACTION_PRECISION);
+        strValue = new StringBuilder(strValue)
+          .replace(matcher.start(TIME_FRACTION_GROUP), matcher.end(TIME_FRACTION_GROUP), trimmedTimeFraction)
+          .toString();
       }
     } else {
       //Don't throw exception for now as we might be missing some scenario in the format
       //Let it fail during BigQuery insert in case of wrong format
       LOG.warn("Invalid value {} for DATETIME type, it should match the " +
-                  "format YYYY-[M]M-[D]D[( |T)[H]H:[M]M:[S]S[.F]]", strValue);
+                 "format YYYY-[M]M-[D]D[( |T)[H]H:[M]M:[S]S[.F]]", strValue);
     }
     return strValue;
   }
