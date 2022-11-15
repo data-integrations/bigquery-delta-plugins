@@ -30,9 +30,11 @@ jobs:
     steps:
       # Pinned 1.0.0 version
       - uses: haya14busa/action-workflow_run-status@967ed83efa565c257675ed70cfe5231f062ddd94
+
       - uses: actions/checkout@v3
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
+
       - name: Cache
         uses: actions/cache@v3
         with:
@@ -40,8 +42,10 @@ jobs:
           key: ${{ runner.os }}-maven-${{ github.workflow }}-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
             ${{ runner.os }}-maven-${{ github.workflow }}
+
       - name: Build with Maven
         run: mvn clean compile test -fae -T 2 -B -V -DcloudBuild -Dmaven.wagon.http.retryHandler.count=3 -Dmaven.wagon.httpconnectionManager.ttlSeconds=25
+
       - name: Archive build artifacts
         uses: actions/upload-artifact@v3
         if: always()
@@ -50,6 +54,7 @@ jobs:
           path: |
             **/target/rat.txt
             **/target/surefire-reports/*
+
       - name: Surefire Report
         # Pinned 3.5.2 version
         uses: mikepenz/action-junit-report@16a9560bd02f11e7e3bf6b3e2ef6bba6c9d07c32
