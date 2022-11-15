@@ -15,6 +15,7 @@
 name: Build with unit tests
 
 on:
+  push:
   workflow_run:
     workflows:
       - Trigger build
