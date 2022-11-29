@@ -1277,16 +1277,16 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   private void runWithRetries(ContextualRunnable runnable, long retryDelay, String dataset, String schema, String table,
-    String onFailedAttemptMessage, String retriesExhaustedMessage) throws DeltaFailureException, InterruptedException {
+                              String onFailedAttemptMessage, String retriesExhaustedMessage) throws DeltaFailureException, InterruptedException {
     RetryPolicy<Object> retryPolicy = createBaseRetryPolicy(retryDelay)
       .onFailedAttempt(failureContext -> {
         Throwable t = failureContext.getLastFailure();
         LOG.error(onFailedAttemptMessage, t);
         //Logging error list
-        List<BigQueryError> errors = ((BigQueryException) t).getErrors();
-        if (errors.size() > 1) {
-          for (int i = 1; i < errors.size(); i++) {
-            LOG.error(errors.get(i).getMessage());
+        if (t instanceof BigQueryException) {
+          List<BigQueryError> errors = ((BigQueryException) t).getErrors();
+          if (errors != null) {
+            errors.forEach(err -> LOG.error(err.getMessage()));
           }
         }
         // its ok to set table state every retry, because this is a no-op if there is no change to the state.
