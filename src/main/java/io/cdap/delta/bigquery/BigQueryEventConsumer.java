@@ -1277,7 +1277,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   private void runWithRetries(ContextualRunnable runnable, long retryDelay, String dataset, String schema, String table,
-                              String onFailedAttemptMessage, String retriesExhaustedMessage) throws DeltaFailureException, InterruptedException {
+    String onFailedAttemptMessage, String retriesExhaustedMessage) throws DeltaFailureException, InterruptedException {
     RetryPolicy<Object> retryPolicy = createBaseRetryPolicy(retryDelay)
       .onFailedAttempt(failureContext -> {
         Throwable t = failureContext.getLastFailure();
