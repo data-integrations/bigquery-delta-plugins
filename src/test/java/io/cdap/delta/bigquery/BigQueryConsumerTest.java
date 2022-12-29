@@ -69,6 +69,7 @@ public class BigQueryConsumerTest {
   private static final Logger LOG = LoggerFactory.getLogger(BigQueryConsumerTest.class);
   private static final String TABLE_NAME_PREFIX = "table_";
   private static final String DATABASE = "database";
+  private static final String DB_SCHEMA = "schema";
   private static final int LOAD_INTERVAL_SECONDS = 4;
   private static final String DATASET = "dataset";
   private static final String EMPTY_DATASET_NAME = "";
@@ -77,6 +78,7 @@ public class BigQueryConsumerTest {
   private static final String PRIMARY_KEY_COL = "id";
   private static final String NAME_COL = "name";
   private static final long GENERATION = 1L;
+  private static final int TABLE_COUNT = 5;
   private static final int BQ_JOB_TIME_BOUND = 2;
   private static final int MAX_RETRY_SECONDS = 10;
   private static final Random random = new Random();
