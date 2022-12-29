@@ -72,7 +72,6 @@ public class BigQueryConsumerTest {
   private static final Logger LOG = LoggerFactory.getLogger(BigQueryConsumerTest.class);
   private static final String TABLE_NAME_PREFIX = "table_";
   private static final String DATABASE = "database";
-  private static final String DB_SCHEMA = "schema";
   private static final int LOAD_INTERVAL_SECONDS = 4;
   private static final String DATASET = "dataset";
   private static final String EMPTY_DATASET_NAME = "";
