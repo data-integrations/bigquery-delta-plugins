@@ -20,7 +20,6 @@ package io.cdap.delta.bigquery;
 import com.google.api.gax.paging.Page;
 import com.google.auth.Credentials;
 import com.google.auth.oauth2.GoogleCredentials;
-import com.google.cloud.PageImpl;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryOptions;
 import com.google.cloud.bigquery.Dataset;
@@ -35,10 +34,8 @@ import com.google.cloud.bigquery.Table;
 import com.google.cloud.bigquery.TableDefinition;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
-import com.google.cloud.bigquery.TableResult;
 import com.google.common.base.Strings;
 import io.cdap.delta.api.SourceTable;
-import org.junit.AfterClass;
 import org.junit.Assume;
 import org.junit.Before;
 import org.junit.BeforeClass;
@@ -57,7 +54,6 @@ import java.io.FileInputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -97,6 +93,22 @@ public class BigQueryUtilsTest {
       PowerMockito.doReturn(1L, 2L, 3L, 4L)
         .when(BigQueryUtils.class, "executeAggregateQuery",
               ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
+    }
+
+    @Test
+    public void testGetNormalizeDatasetName() {
+      // only contains number and letter
+      assertEquals("a2fs", BigQueryUtils.getNormalizedDatasetName("a2fs", "db2"));
+      assertEquals("db2", BigQueryUtils.getNormalizedDatasetName(null, "db2"));
+      assertEquals("db2", BigQueryUtils.getNormalizedDatasetName("", "db2"));
+
+      // only contains number and letter start with number
+      assertEquals("2fas", BigQueryUtils.getNormalizedDatasetName("2fas", "db2"));
+
+      // contains invalid character
+      assertEquals("ab_c", BigQueryUtils.getNormalizedDatasetName("ab?/c", "db?/c"));
+      assertEquals("db_c", BigQueryUtils.getNormalizedDatasetName(null, "db?/c"));
+      assertEquals("db_c", BigQueryUtils.getNormalizedDatasetName("", "db?/c"));
     }
 
     @Test
@@ -249,6 +261,17 @@ public class BigQueryUtilsTest {
 
     }
 
+    @Test
+    public void testGetMaximumExistingSequenceNumberEmptyDatasetName() throws Exception {
+      Set<SourceTable> allTables = generateSourceTableSet(1);
+      Mockito.when(bigQueryMock.listTables(ArgumentMatchers.anyString())).thenReturn(generateBQTablesPage(1));
+      long tableResult0 = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, PROJECT,
+                                                                         "", bigQueryMock, null, 1000);
+      assertEquals(1, tableResult0);
+      PowerMockito.verifyPrivate(BigQueryUtils.class, times(1))
+        .invoke("executeAggregateQuery",
+                ArgumentMatchers.eq(bigQueryMock), ArgumentMatchers.any(), ArgumentMatchers.any());
+    }
   }
 
   public static class BigQueryGCPDependentTests {

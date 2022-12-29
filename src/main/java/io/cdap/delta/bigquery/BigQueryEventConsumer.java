@@ -60,6 +60,7 @@ import net.jodah.failsafe.FailsafeException;
 import net.jodah.failsafe.RetryPolicy;
 import net.jodah.failsafe.TimeoutExceededException;
 import net.jodah.failsafe.function.ContextualRunnable;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.twill.common.Threads;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -283,9 +284,8 @@ public class BigQueryEventConsumer implements EventConsumer {
 
     DDLEvent event = sequencedEvent.getEvent();
     DDLOperation ddlOperation = event.getOperation();
-    String normalizedDatabaseName = datasetName == null ?
-      BigQueryUtils.normalizeDatasetName(event.getOperation().getDatabaseName()) :
-      BigQueryUtils.normalizeDatasetName(datasetName);
+    String normalizedDatabaseName = BigQueryUtils.getNormalizedDatasetName(datasetName,
+      event.getOperation().getDatabaseName());
     String normalizedTableName = BigQueryUtils.normalizeTableName(ddlOperation.getTableName());
     String normalizedStagingTableName = normalizedTableName == null ? null :
       BigQueryUtils.normalizeTableName(stagingTablePrefix + normalizedTableName);
@@ -558,9 +558,8 @@ public class BigQueryEventConsumer implements EventConsumer {
       throw flushException;
     }
     DMLEvent event = sequencedEvent.getEvent();
-    String normalizedDatabaseName = datasetName == null ?
-      BigQueryUtils.normalizeDatasetName(event.getOperation().getDatabaseName()) :
-      BigQueryUtils.normalizeDatasetName(datasetName);
+    String normalizedDatabaseName = BigQueryUtils.getNormalizedDatasetName(datasetName,
+       event.getOperation().getDatabaseName());
     String normalizedTableName = BigQueryUtils.normalizeTableName(event.getOperation().getTableName());
     DMLEvent normalizedDMLEvent = BigQueryUtils.normalize(event)
       .setDatabaseName(normalizedDatabaseName)

@@ -34,6 +34,7 @@ import io.cdap.cdap.api.data.format.StructuredRecord;
 import io.cdap.cdap.api.data.schema.Schema;
 import io.cdap.delta.api.DMLEvent;
 import io.cdap.delta.api.SourceTable;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -104,8 +105,7 @@ public final class BigQueryUtils {
                                                        EncryptionConfiguration encryptionConfiguration) {
     SourceTable table0 = allTables.stream().findFirst().get();
     Set<TableId> existingTableIDs = new HashSet<>();
-    String dataset = datasetName != null ? normalizeDatasetName(datasetName) :
-      normalizeDatasetName(table0.getDatabase());
+    String dataset = getNormalizedDatasetName(datasetName, table0.getDatabase());
     if (bigQuery.getDataset(dataset) != null) {
       for (Table table : bigQuery.listTables(dataset).iterateAll()) {
         existingTableIDs.add(table.getTableId());
@@ -116,8 +116,8 @@ public final class BigQueryUtils {
     builder.append("SELECT MAX(max_sequence_num) FROM (");
     List<String> maxSequenceNumQueryPerTable = new ArrayList<>();
     for (SourceTable table : allTables) {
-      TableId tableId = TableId.of(project, datasetName != null ? normalizeDatasetName(datasetName) :
-        normalizeDatasetName(table.getDatabase()), normalizeTableName(table.getTable()));
+      TableId tableId = TableId.of(project, getNormalizedDatasetName(datasetName, table.getDatabase()),
+                                   normalizeTableName(table.getTable()));
       if (existingTableIDs.contains(tableId)) {
         maxSequenceNumQueryPerTable.add(String.format("SELECT MAX(_sequence_num) as max_sequence_num FROM %s",
                                                       wrapInBackTick(tableId.getDataset(), tableId.getTable())));
@@ -177,6 +177,21 @@ public final class BigQueryUtils {
     }
 
     return val.getLongValue();
+  }
+
+  /**
+   * Get normalized dataset name for target dataset
+   * Method returns normalized datasetName if it is not empty
+   * Otherwise it returns normalized form of databaseName
+   * @param datasetName dataset name to be normalized
+   * @param databaseName database name to be used if datasetName is empty
+   * @return normalized datasetName if it is not empty otherwise normalized form of databaseName
+   */
+  public static String getNormalizedDatasetName(@Nullable String datasetName, String databaseName) {
+    if (StringUtils.isNotEmpty(datasetName)) {
+      return normalizeDatasetName(datasetName);
+    }
+    return normalizeDatasetName(databaseName);
   }
 
   /**
