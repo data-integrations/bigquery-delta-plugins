@@ -24,6 +24,7 @@ import com.google.cloud.bigquery.JobStatus;
 import com.google.cloud.bigquery.Table;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
+import com.google.cloud.bigquery.TableResult;
 import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
@@ -38,6 +39,7 @@ import io.cdap.delta.api.DMLOperation;
 import io.cdap.delta.api.DeltaTargetContext;
 import io.cdap.delta.api.Offset;
 import io.cdap.delta.api.Sequenced;
+import org.apache.avro.file.DataFileWriter;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -50,14 +52,10 @@ import org.powermock.modules.junit4.PowerMockRunner;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
-import java.util.ArrayList;
+import java.io.OutputStream;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
@@ -65,28 +63,28 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-@PrepareForTest({BigQueryEventConsumer.class, BigQueryUtils.class})
+@PrepareForTest({AvroEventWriter.class})
 @RunWith(PowerMockRunner.class)
 public class BigQueryConsumerTest {
   private static final Logger LOG = LoggerFactory.getLogger(BigQueryConsumerTest.class);
   private static final String TABLE_NAME_PREFIX = "table_";
   private static final String DATABASE = "database";
-  private static final String DB_SCHEMA = "schema";
   private static final int LOAD_INTERVAL_SECONDS = 4;
   private static final String DATASET = "dataset";
   private static final String EMPTY_DATASET_NAME = "";
   private static final String BUCKET = "bucket";
   private static final String TABLE = "table";
-  private static final int TABLE_COUNT = 5;
   private static final String PRIMARY_KEY_COL = "id";
+  private static final String NAME_COL = "name";
+  private static final long GENERATION = 1L;
   private static final int BQ_JOB_TIME_BOUND = 2;
   private static final int MAX_RETRY_SECONDS = 10;
   private static final Random random = new Random();
   private static final List<String> primaryKeys = Arrays.asList(PRIMARY_KEY_COL);
   private static final Schema schema = Schema.recordOf(TABLE,
                                                        Schema.Field.of(PRIMARY_KEY_COL, Schema.of(Schema.Type.INT)),
-                                                       Schema.Field.of("name", Schema.of(Schema.Type.STRING)));
-  private static final BlobId blobId = BlobId.of(BUCKET, TABLE, 1L);
+                                                       Schema.Field.of(NAME_COL, Schema.of(Schema.Type.STRING)));
+  private static final BlobId blobId = BlobId.of(BUCKET, TABLE, GENERATION);
 
   @Mock
   private DeltaTargetContext deltaTargetContext;
@@ -94,8 +92,6 @@ public class BigQueryConsumerTest {
   private Storage storage;
   @Mock
   private BigQuery bigQuery;
-  @Mock
-  private MultiGCSWriter gcsWriter;
   @Mock
   private Bucket bucket;
   @Mock
@@ -106,15 +102,21 @@ public class BigQueryConsumerTest {
   private Table table;
   @Mock
   private Job job;
+  @Mock
+  private DataFileWriter dataFileWriter;
 
   @Before
   public void setup() throws Exception {
     Mockito.when(deltaTargetContext.getMaxRetrySeconds()).thenReturn(MAX_RETRY_SECONDS);
     Mockito.when(bucket.getName()).thenReturn(BUCKET);
     Mockito.when(storage.writer(Mockito.any(BlobInfo.class))).thenReturn(writeChannel);
+    Mockito.when(storage.get(Mockito.any(BlobId.class))).thenReturn(blob);
     Mockito.when(blob.getBlobId()).thenReturn(blobId);
-    PowerMockito.whenNew(MultiGCSWriter.class).withAnyArguments().thenReturn(gcsWriter);
+    Mockito.when(dataFileWriter.create(Mockito.any(org.apache.avro.Schema.class), Mockito.any(OutputStream.class)))
+      .thenReturn(dataFileWriter);
+    PowerMockito.whenNew(DataFileWriter.class).withAnyArguments().thenReturn(dataFileWriter);
 
+    //Random execution time for BigQuery job
     Mockito.when(job.waitFor())
       .thenAnswer((a) -> {
         TimeUnit.MILLISECONDS.sleep(ThreadLocalRandom.current().nextLong(BQ_JOB_TIME_BOUND));
@@ -123,29 +125,25 @@ public class BigQueryConsumerTest {
     Mockito.when(job.getStatus()).thenReturn(Mockito.mock(JobStatus.class));
     Mockito.when(bigQuery.create(ArgumentMatchers.any(JobInfo.class))).thenReturn(job);
     Mockito.when(bigQuery.getTable(Mockito.any())).thenReturn(table);
-    PowerMockito.spy(BigQueryUtils.class);
-    PowerMockito.
-      doReturn(0L)
-      .when(BigQueryUtils.class, "getMaximumSequenceNumberForTable", ArgumentMatchers.eq(bigQuery),
-            ArgumentMatchers.any(),
-            ArgumentMatchers.any());
+
+    //mocks for BigQueryUtils.getMaximumSequenceNumberForTable
+    TableResult tableResult = Mockito.mock(TableResult.class);
+    Mockito.when(tableResult.iterateAll()).thenReturn(Collections.emptyList());
+    Mockito.when(job.getQueryResults()).thenReturn(tableResult);
   }
 
   @Test
   public void testConsumerMultipleTableInsertEvents() throws Exception {
-    List<String> tables = getTables(TABLE_COUNT);
-
+    int numTables = 10;
     int numInsertEvents = 10;
-    long batchId = 1L;
-    setupMocksForGCSWriter(DATASET, tables, 10, batchId);
+
+    List<String> tables = getTables(numTables);
 
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_SECONDS, "_staging",
-                                                                    true, null, 2L,
+                                                                    false, null, 2L,
                                                                     DATASET, false);
-
-
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
@@ -154,44 +152,44 @@ public class BigQueryConsumerTest {
     //Wait for flush with some buffer
     Thread.sleep(TimeUnit.SECONDS.toMillis(LOAD_INTERVAL_SECONDS + 2));
 
-    Mockito.verify(gcsWriter, Mockito.atLeastOnce()).flush();
-    Mockito.verify(bigQuery, Mockito.times(1)).create(Mockito.any(DatasetInfo.class));
+    Mockito.verify(dataFileWriter, Mockito.times(numTables * numInsertEvents))
+      .append(Mockito.any());
+    Mockito.verify(dataFileWriter, Mockito.atLeast(numTables)).close();
+    Mockito.verify(bigQuery, Mockito.times(1)).create(datasetIs(DATASET));
     Mockito.verify(bigQuery, Mockito.atLeastOnce()).getTable(Mockito.any(TableId.class));
     //Mocks are setup such that the table already exists (for simplicity)
     Mockito.verify(bigQuery, Mockito.never()).create(Mockito.any(TableInfo.class));
     //Load and merge jobs
-    Mockito.verify(bigQuery, Mockito.atLeast(TABLE_COUNT)).create(Mockito.any(JobInfo.class));
+    Mockito.verify(bigQuery, Mockito.atLeast(numTables)).create(Mockito.any(JobInfo.class));
     //Delete staging table
-    Mockito.verify(bigQuery, Mockito.times(TABLE_COUNT)).delete(Mockito.any(TableId.class));
+    Mockito.verify(bigQuery, Mockito.times(numTables)).delete(Mockito.any(TableId.class));
 
     LOG.info("Stopping eventConsumer");
     eventConsumer.stop();
     LOG.info("Stopped eventConsumer");
 
-    //Clear existing interactions so that
-    Mockito.reset(bigQuery, job, gcsWriter);
+    //Clear existing interactions
+    Mockito.reset(bigQuery, job);
 
     LOG.info("Wait for load interval");
     //Let another round of load interval to pass so that we can verify
     //that no BQ jobs are fired after closing consumer
     Thread.sleep(TimeUnit.SECONDS.toMillis(LOAD_INTERVAL_SECONDS + 2));
 
-    Mockito.verifyNoMoreInteractions(job, bigQuery, gcsWriter);
+    Mockito.verifyNoMoreInteractions(job, bigQuery);
   }
 
   @Test
   public void testConsumerEmptyDataset() throws Exception {
-    List<String> tables = getTables(1);
-
+    int numTables = 1;
     int numInsertEvents = 10;
-    long batchId = 1L;
 
-    setupMocksForGCSWriter(DATABASE, tables, 10, batchId);
+    List<String> tables = getTables(numTables);
 
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_SECONDS, "_staging",
-                                                                    true, null, 2L,
+                                                                    false, null, 2L,
                                                                     EMPTY_DATASET_NAME, false);
     eventConsumer.start();
 
@@ -201,32 +199,22 @@ public class BigQueryConsumerTest {
     //Wait for flush with some buffer
     Thread.sleep(TimeUnit.SECONDS.toMillis(LOAD_INTERVAL_SECONDS + 2));
 
-    Mockito.verify(gcsWriter, Mockito.atLeastOnce()).flush();
-    Mockito.verify(bigQuery, Mockito.times(1)).create(Mockito.any(DatasetInfo.class));
+    Mockito.verify(dataFileWriter, Mockito.times(numInsertEvents)).append(Mockito.any());
+    Mockito.verify(dataFileWriter, Mockito.atLeast(numTables)).close();
+    Mockito.verify(bigQuery, Mockito.times(1)).create(datasetIs(DATABASE));
     Mockito.verify(bigQuery, Mockito.atLeastOnce()).getTable(Mockito.any(TableId.class));
     //Mocks are setup such that the table already exists (for simplicity)
     Mockito.verify(bigQuery, Mockito.never()).create(Mockito.any(TableInfo.class));
     //Load and merge jobs
     Mockito.verify(bigQuery, Mockito.atLeastOnce()).create(Mockito.any(JobInfo.class));
     //Delete staging table
-    Mockito.verify(bigQuery, Mockito.times(1)).delete(Mockito.any(TableId.class));
+    Mockito.verify(bigQuery, Mockito.times(numTables)).delete(Mockito.any(TableId.class));
 
     eventConsumer.stop();
   }
 
-  private int setupMocksForGCSWriter(String normalizedDatasetName, List<String> tables, int numInsertEvents,
-                                     long batchId) throws IOException, InterruptedException {
-    List<TableBlob> tableBlobs = new ArrayList<>();
-    tables.forEach(table -> tableBlobs.add(createTableBlob(table, batchId, numInsertEvents, normalizedDatasetName)));
-    Map<MultiGCSWriter.BlobType, Collection<TableBlob>> tableBlobsByBlobType = new HashMap<>();
-    tableBlobsByBlobType.put(MultiGCSWriter.BlobType.STREAMING, tableBlobs);
-    tableBlobsByBlobType.put(MultiGCSWriter.BlobType.SNAPSHOT, Collections.emptyList());
-    Mockito.when(gcsWriter.flush()).thenReturn(tableBlobsByBlobType);
-    return numInsertEvents;
-  }
-
-  private TableBlob createTableBlob(String table, long batchId, int numEvents, String dataset) {
-    return new TableBlob(dataset, DB_SCHEMA, table, schema, schema, batchId, numEvents, blob, false, false);
+  private DatasetInfo datasetIs(String database) {
+    return Mockito.argThat(arg -> arg.getDatasetId().getDataset().equals(database));
   }
 
   private List<String> getTables(int n) {
@@ -263,7 +251,7 @@ public class BigQueryConsumerTest {
       for (int num = 0; num < numEvents; num++) {
         StructuredRecord record = StructuredRecord.builder(schema)
           .set(PRIMARY_KEY_COL, random.nextInt())
-          .set("name", "alice")
+          .set(NAME_COL, "alice")
           .build();
 
         DMLEvent insert1Event = DMLEvent.builder()
