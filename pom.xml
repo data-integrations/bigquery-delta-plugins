@@ -320,7 +320,7 @@
             <Embed-Transitive>true</Embed-Transitive>
             <Embed-Directory>lib</Embed-Directory>
             <!--Only @Plugin classes in the export packages will be included as plugin-->
-            <_exportcontents>io.cdap.delta.bigquery.*</_exportcontents>
+            <_exportcontents>io.cdap.delta.bigquery.*,io.cdap.delta.transformation.*</_exportcontents>
           </instructions>
         </configuration>
         <executions>
