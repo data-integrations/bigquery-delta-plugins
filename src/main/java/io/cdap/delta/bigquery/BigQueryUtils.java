@@ -28,13 +28,13 @@ import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.Table;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableResult;
+import com.google.common.base.Strings;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
 import io.cdap.cdap.api.data.format.StructuredRecord;
 import io.cdap.cdap.api.data.schema.Schema;
 import io.cdap.delta.api.DMLEvent;
 import io.cdap.delta.api.SourceTable;
-import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -44,7 +44,6 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -188,10 +187,10 @@ public final class BigQueryUtils {
    * @return normalized datasetName if it is not empty otherwise normalized form of databaseName
    */
   public static String getNormalizedDatasetName(@Nullable String datasetName, String databaseName) {
-    if (StringUtils.isNotEmpty(datasetName)) {
-      return normalizeDatasetName(datasetName);
+    if (Strings.isNullOrEmpty(datasetName)) {
+      return normalizeDatasetName(databaseName);
     }
-    return normalizeDatasetName(databaseName);
+    return normalizeDatasetName(datasetName);
   }
 
   /**
