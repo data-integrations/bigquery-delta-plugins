@@ -28,6 +28,7 @@ import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.Table;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableResult;
+import com.google.common.base.Strings;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
 import io.cdap.cdap.api.data.format.StructuredRecord;
@@ -43,7 +44,6 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -104,8 +104,7 @@ public final class BigQueryUtils {
                                                        EncryptionConfiguration encryptionConfiguration) {
     SourceTable table0 = allTables.stream().findFirst().get();
     Set<TableId> existingTableIDs = new HashSet<>();
-    String dataset = datasetName != null ? normalizeDatasetName(datasetName) :
-      normalizeDatasetName(table0.getDatabase());
+    String dataset = getNormalizedDatasetName(datasetName, table0.getDatabase());
     if (bigQuery.getDataset(dataset) != null) {
       for (Table table : bigQuery.listTables(dataset).iterateAll()) {
         existingTableIDs.add(table.getTableId());
@@ -116,8 +115,8 @@ public final class BigQueryUtils {
     builder.append("SELECT MAX(max_sequence_num) FROM (");
     List<String> maxSequenceNumQueryPerTable = new ArrayList<>();
     for (SourceTable table : allTables) {
-      TableId tableId = TableId.of(project, datasetName != null ? normalizeDatasetName(datasetName) :
-        normalizeDatasetName(table.getDatabase()), normalizeTableName(table.getTable()));
+      TableId tableId = TableId.of(project, getNormalizedDatasetName(datasetName, table.getDatabase()),
+                                   normalizeTableName(table.getTable()));
       if (existingTableIDs.contains(tableId)) {
         maxSequenceNumQueryPerTable.add(String.format("SELECT MAX(_sequence_num) as max_sequence_num FROM %s",
                                                       wrapInBackTick(tableId.getDataset(), tableId.getTable())));
@@ -177,6 +176,21 @@ public final class BigQueryUtils {
     }
 
     return val.getLongValue();
+  }
+
+  /**
+   * Get normalized dataset name for target dataset
+   * Method returns normalized datasetName if it is not empty
+   * Otherwise it returns normalized form of databaseName
+   * @param datasetName dataset name to be normalized
+   * @param databaseName database name to be used if datasetName is empty
+   * @return normalized datasetName if it is not empty otherwise normalized form of databaseName
+   */
+  public static String getNormalizedDatasetName(@Nullable String datasetName, String databaseName) {
+    if (Strings.isNullOrEmpty(datasetName)) {
+      return normalizeDatasetName(databaseName);
+    }
+    return normalizeDatasetName(datasetName);
   }
 
   /**

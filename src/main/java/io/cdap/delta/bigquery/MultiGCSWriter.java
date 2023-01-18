@@ -90,7 +90,7 @@ public class MultiGCSWriter {
   public synchronized void write(Sequenced<DMLEvent> sequencedEvent) {
     DMLEvent event = sequencedEvent.getEvent();
     DMLOperation dmlOperation = event.getOperation();
-    Key key = new Key(event.getOperation().getDatabaseName(), dmlOperation.getTableName(), event.isSnapshot());
+    Key key = new Key(dmlOperation.getDatabaseName(), dmlOperation.getTableName(), event.isSnapshot());
     TableObject tableObject = objects.computeIfAbsent(key, t -> new TableObject(dmlOperation.getDatabaseName(),
                                                                                 dmlOperation.getSchemaName(),
                                                                                 dmlOperation.getTableName(),
