@@ -47,12 +47,16 @@ import org.junit.runner.RunWith;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mock;
 import org.mockito.Mockito;
+import org.mockito.invocation.InvocationOnMock;
+import org.mockito.stubbing.Answer;
+import org.mockito.stubbing.Answer1;
 import org.powermock.api.mockito.PowerMockito;
 import org.powermock.core.classloader.annotations.PrepareForTest;
 import org.powermock.modules.junit4.PowerMockRunner;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
 import java.io.OutputStream;
 import java.util.Arrays;
 import java.util.Collections;
@@ -110,7 +114,7 @@ public class BigQueryConsumerTest {
 
   @Before
   public void setup() throws Exception {
-    Mockito.when(deltaTargetContext.getMaxRetrySeconds()).thenReturn(MAX_RETRY_SECONDS);
+    Mockito.when(deltaTargetContext.getMaxRetrySeconds()).thenReturn(MAX_RETRY_SECONDS).getMock();
     Mockito.when(bucket.getName()).thenReturn(BUCKET);
     Mockito.when(storage.writer(Mockito.any(BlobInfo.class))).thenReturn(writeChannel);
     Mockito.when(storage.get(Mockito.any(BlobId.class))).thenReturn(blob);
@@ -254,6 +258,59 @@ public class BigQueryConsumerTest {
     eventConsumer.stop();
   }
 
+  public void testConsumerCommitFailureRetries() throws Exception {
+    int numTables = 1;
+    int numInsertEvents = 10;
+
+    List<String> tables = getTables(numTables);
+
+    Throwable error = new Throwable("network error");
+    SuccessAfterNFailures answer = new SuccessAfterNFailures(3, error);
+    Mockito.doAnswer(answer)
+      .when(deltaTargetContext)
+      .commitOffset(Mockito.any(Offset.class), Mockito.anyLong());
+
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
+                                                                    bigQuery, bucket, "project",
+                                                                    1, "_staging",
+                                                                    false, null, 2L,
+                                                                    DATASET, false);
+    eventConsumer.start();
+
+    generateDDL(eventConsumer, tables);
+    generateInsertEvents(eventConsumer, tables, numInsertEvents);
+
+    //Wait for flush with some buffer
+    Thread.sleep(TimeUnit.SECONDS.toMillis(10));
+
+    Mockito.verify(dataFileWriter, Mockito.times(numTables * numInsertEvents))
+      .append(Mockito.any());
+    Mockito.verify(dataFileWriter, Mockito.atLeast(numTables)).close();
+    Mockito.verify(bigQuery, Mockito.times(1)).create(datasetIs(DATASET));
+    Mockito.verify(bigQuery, Mockito.atLeastOnce()).getTable(Mockito.any(TableId.class));
+    //Mocks are setup such that the table already exists (for simplicity)
+    Mockito.verify(bigQuery, Mockito.never()).create(Mockito.any(TableInfo.class));
+    //Load and merge jobs
+    Mockito.verify(bigQuery, Mockito.atLeast(numTables)).create(Mockito.any(JobInfo.class));
+    //Delete staging table
+    Mockito.verify(bigQuery, Mockito.times(numTables)).delete(Mockito.any(TableId.class));
+    //Verify there were 3 retries
+    Mockito.verify(deltaTargetContext, Mockito.atLeast(3))
+      .commitOffset(Mockito.any(Offset.class), Mockito.anyLong());
+
+    eventConsumer.stop();
+
+    //Clear existing interactions
+    Mockito.reset(bigQuery, job);
+
+    LOG.info("Wait for load interval");
+    //Let another round of load interval to pass so that we can verify
+    //that no BQ jobs are fired after closing consumer
+    Thread.sleep(TimeUnit.SECONDS.toMillis(LOAD_INTERVAL_SECONDS + 2));
+
+    Mockito.verifyNoMoreInteractions(job, bigQuery);
+  }
+
   private DatasetInfo datasetIs(String database) {
     return Mockito.argThat(arg -> arg.getDatasetId().getDataset().equals(database));
   }
@@ -306,6 +363,26 @@ public class BigQueryConsumerTest {
           .build();
         eventConsumer.applyDML(new Sequenced<>(insert1Event, seq.incrementAndGet()));
       }
+    }
+  }
+
+  static class SuccessAfterNFailures implements Answer<Void> {
+    private final int totalFailures;
+    private final Throwable error;
+    private AtomicInteger currFailures;
+
+    SuccessAfterNFailures(int totalFailures, Throwable error) {
+      this.error = error;
+      this.currFailures = new AtomicInteger();
+      this.totalFailures = totalFailures;
+    }
+
+    @Override
+    public Void answer(InvocationOnMock invocation) throws Throwable {
+      if (currFailures.incrementAndGet() <= totalFailures) {
+        throw error;
+      }
+      return null;
     }
   }
 }
