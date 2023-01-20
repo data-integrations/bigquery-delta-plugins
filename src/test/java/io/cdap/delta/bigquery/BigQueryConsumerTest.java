@@ -74,6 +74,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import javax.ws.rs.HEAD;
 
 @PrepareForTest({AvroEventWriter.class})
 @RunWith(PowerMockRunner.class)
