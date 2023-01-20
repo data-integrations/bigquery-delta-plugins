@@ -164,6 +164,9 @@ public class BigQueryEventConsumer implements EventConsumer {
   private static final Gson GSON = new Gson();
   private static final String RETAIN_STAGING_TABLE = "retain.staging.table";
   private static final String DIRECT_LOADING_IN_PROGRESS_PREFIX = "bigquery-direct-load-in-progress-";
+  public static final String MERGE_JOB_TYPE = "merge";
+  public static final String LOAD_STAGING_JOB_TYPE = "stage";
+  public static final String LOAD_TARGET_JOB_TYPE = "load";
 
   private final DeltaTargetContext context;
   private final BigQuery bigQuery;
