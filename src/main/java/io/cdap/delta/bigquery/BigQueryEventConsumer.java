@@ -507,7 +507,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     List<String> primaryKeys = primaryKeyStore.get(targetTableId);
     if (primaryKeys == null) {
       byte[] stateBytes = context.getState(getTableStateKey(targetTableId));
-      if (stateBytes == null) {
+      if (stateBytes == null || stateBytes.length == 0) {
         throw new DeltaFailureException(
           String.format("Primary key information for table '%s' in dataset '%s' could not be found. This can only " +
                           "happen if state was corrupted. Please create a new replicator and start again.",
@@ -515,6 +515,7 @@ public class BigQueryEventConsumer implements EventConsumer {
       }
       BigQueryTableState targetTableState = GSON.fromJson(new String(stateBytes), BigQueryTableState.class);
       primaryKeys = targetTableState.getPrimaryKeys();
+      primaryKeyStore.put(targetTableId, primaryKeys);
     }
     return primaryKeys;
   }
