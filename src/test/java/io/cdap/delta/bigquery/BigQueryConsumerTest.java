@@ -30,6 +30,7 @@ import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.Bucket;
 import com.google.cloud.storage.Storage;
+import com.google.gson.Gson;
 import io.cdap.cdap.api.data.format.StructuredRecord;
 import io.cdap.cdap.api.data.schema.Schema;
 import io.cdap.delta.api.DDLEvent;
@@ -66,6 +67,7 @@ import java.util.stream.IntStream;
 @PrepareForTest({AvroEventWriter.class})
 @RunWith(PowerMockRunner.class)
 public class BigQueryConsumerTest {
+  private static final Gson GSON = new Gson();
   private static final Logger LOG = LoggerFactory.getLogger(BigQueryConsumerTest.class);
   private static final String TABLE_NAME_PREFIX = "table_";
   private static final String DATABASE = "database";
@@ -209,6 +211,44 @@ public class BigQueryConsumerTest {
     Mockito.verify(bigQuery, Mockito.atLeastOnce()).create(Mockito.any(JobInfo.class));
     //Delete staging table
     Mockito.verify(bigQuery, Mockito.times(numTables)).delete(Mockito.any(TableId.class));
+
+    eventConsumer.stop();
+  }
+
+  @Test
+  public void testMergeMultipleTimesUsesPrimaryKeyCache() throws Exception {
+    int numTables = 1;
+    int numInsertEvents = 10;
+    List<String> tables = getTables(numTables);
+
+    Mockito.when(deltaTargetContext.getState(Mockito.matches("bigquery-.*")))
+      .thenReturn(GSON.toJson(new BigQueryTableState(Arrays.asList(PRIMARY_KEY_COL))).getBytes());
+
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
+                                                                    bigQuery, bucket, "project",
+                                                                    LOAD_INTERVAL_SECONDS, "_staging",
+                                                                    false, null, 2L,
+                                                                    EMPTY_DATASET_NAME, false);
+    eventConsumer.start();
+
+    generateInsertEvents(eventConsumer, tables, numInsertEvents);
+
+    //Wait for flush with some buffer
+    Thread.sleep(TimeUnit.SECONDS.toMillis(LOAD_INTERVAL_SECONDS + 2));
+
+    generateInsertEvents(eventConsumer, tables, numInsertEvents);
+
+    //Wait for flush with some buffer
+    Thread.sleep(TimeUnit.SECONDS.toMillis(LOAD_INTERVAL_SECONDS + 2));
+
+    //Verify primary keys were fetched only once from state store and then cached
+    Mockito.verify(deltaTargetContext, Mockito.times(1)).getState(Mockito.any());
+    Mockito.verify(dataFileWriter, Mockito.times(2)).close();
+    //Mocks are setup such that the table already exists (for simplicity)
+    //Load and merge jobs
+    Mockito.verify(bigQuery, Mockito.atLeast(2)).create(Mockito.any(JobInfo.class));
+    //Delete staging table
+    Mockito.verify(bigQuery, Mockito.times(2)).delete(Mockito.any(TableId.class));
 
     eventConsumer.stop();
   }
