@@ -621,9 +621,10 @@ public class BigQueryConsumerTest {
     List<String> tables = getTables(numTables);
 
     Mockito.when(bigQuery.getTable(Mockito.any())).thenReturn(null);
-    BigQueryError invalidError = new BigQueryError("invalid", "loc", "error");
-    Mockito.when(bigQuery.create(Mockito.any(TableInfo.class))).thenThrow(new BigQueryException(400, "error",
-                                                                                                invalidError));
+    BigQueryError error = new BigQueryError("invalid", "loc", "error");
+    Mockito.when(bigQuery.create(Mockito.any(TableInfo.class)))
+      .thenThrow(new BigQueryException(400, "error", error));
+
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_ONE_SECOND, "_staging",

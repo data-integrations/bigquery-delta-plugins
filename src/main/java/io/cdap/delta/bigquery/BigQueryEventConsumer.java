@@ -335,16 +335,13 @@ public class BigQueryEventConsumer implements EventConsumer {
           handleDDL(event, normalizedDatabaseName, normalizedTableName, normalizedStagingTableName);
         } catch (BigQueryException ex) {
           //Unsupported DDL Operation
-          if (ex.getCode() == BQ_INVALID_REQUEST_CODE && ex.getError() != null) {
-            BigQueryError error = ex.getError();
-            if (BQ_ABORT_REASONS.contains(error.getReason())) {
-              throw new DeltaFailureException("Non recoverable error in applying DDL event, aborting", ex);
-            }
+          if (isInvalidOperationError(ex)) {
+            throw new DeltaFailureException("Non recoverable error in applying DDL event, aborting", ex);
           }
         }
       },
-      retryPolicy, String.format("Exhausted retries trying to apply '%s' DDL event",
-                                 event.getOperation())
+      String.format("Exhausted retries trying to apply '%s' DDL event",
+                    event.getOperation()), retryPolicy
     );
 
     latestOffset = event.getOffset();
@@ -1403,21 +1400,30 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   private void runWithRetries(ContextualRunnable runnable, long retryDelay, String dataset, String schema, String table,
-    String onFailedAttemptMessage, String retriesExhaustedMessage) throws DeltaFailureException, InterruptedException {
+                              String onFailedAttemptMessage, String retriesExhaustedMessage)
+    throws DeltaFailureException, InterruptedException {
 
-    RetryPolicy<Object> retryPolicy = createBaseRetryPolicy(retryDelay)
-      .onFailedAttempt(failureContext -> {
-        handleBigQueryFailure(dataset, schema, table, onFailedAttemptMessage, failureContext);
-      });
-
-    runWithRetryPolicy(runnable, retryPolicy, retriesExhaustedMessage);
+    runWithRetryPolicy(runnable, retriesExhaustedMessage,
+                       //Multiple level of policies to ensure invalid operations are retried few times only
+                       //Policies are applied in the order from last to first
+                       //Second level policy aborts on invalid operation failures
+                       createBaseRetryPolicy(retryDelay)
+                         .abortOn(this::isInvalidOperationError)
+                         .onFailedAttempt(failureContext -> {
+                           handleBigQueryFailure(dataset, schema, table, onFailedAttemptMessage, failureContext);
+                         }),
+                       //First level policy retries all errors few times only
+                       createBaseRetryPolicy(retryDelay, 3)
+                         .onFailedAttempt(failureContext -> {
+                           handleBigQueryFailure(dataset, schema, table, onFailedAttemptMessage, failureContext);
+                         }));
   }
 
-  private void runWithRetryPolicy(ContextualRunnable runnable, RetryPolicy<Object> retryPolicy,
-                                  String retriesExhaustedMessage)
+  private void runWithRetryPolicy(ContextualRunnable runnable, String retriesExhaustedMessage,
+                                  RetryPolicy<Object>... retryPolicies)
     throws DeltaFailureException, InterruptedException {
     try {
-      Failsafe.with(retryPolicy).run(runnable);
+      Failsafe.with(retryPolicies).run(runnable);
     } catch (TimeoutExceededException e) {
       // if the retry timeout was reached, throw a DeltaFailureException to fail the pipeline immediately
       DeltaFailureException exc = new DeltaFailureException(retriesExhaustedMessage, e);
@@ -1438,7 +1444,7 @@ public class BigQueryEventConsumer implements EventConsumer {
                                      ExecutionAttemptedEvent<Object> failureContext) {
     Throwable t = failureContext.getLastFailure();
     LOG.error(onFailedAttemptMessage, t);
-    if (t.getCause() instanceof DeltaFailureException) {
+    if (t.getCause() instanceof BigQueryException) {
       t = t.getCause();
     }
     //Logging error list
@@ -1639,6 +1645,10 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   private <T> RetryPolicy<T> createBaseRetryPolicy(long baseDelay) {
+    return createBaseRetryPolicy(baseDelay, Integer.MAX_VALUE);
+  }
+
+  private <T> RetryPolicy<T> createBaseRetryPolicy(long baseDelay, int maxAttempts) {
     RetryPolicy<T> retryPolicy = new RetryPolicy<>();
     retryPolicy.abortOn(f -> shouldStop.get());
     if (context.getMaxRetrySeconds() < 1) {
@@ -1646,7 +1656,21 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
 
     long maxDelay = Math.max(baseDelay + 1, loadIntervalSeconds);
-    return retryPolicy.withMaxAttempts(Integer.MAX_VALUE)
+    return retryPolicy.withMaxAttempts(maxAttempts)
       .withBackoff(baseDelay, maxDelay, ChronoUnit.SECONDS);
+  }
+
+  private boolean isInvalidOperationError(Throwable ex) {
+    return ex instanceof BigQueryException && isInvalidOperationError((BigQueryException) ex);
+  }
+
+  private boolean isInvalidOperationError(BigQueryException ex) {
+    if (ex.getCode() == BQ_INVALID_REQUEST_CODE && ex.getError() != null) {
+      BigQueryError error = ex.getError();
+      if (BQ_ABORT_REASONS.contains(error.getReason())) {
+        return true;
+      }
+    }
+    return false;
   }
 }
