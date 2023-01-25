@@ -60,6 +60,7 @@ import net.jodah.failsafe.Failsafe;
 import net.jodah.failsafe.FailsafeException;
 import net.jodah.failsafe.RetryPolicy;
 import net.jodah.failsafe.TimeoutExceededException;
+import net.jodah.failsafe.event.ExecutionAttemptedEvent;
 import net.jodah.failsafe.function.ContextualRunnable;
 import org.apache.twill.common.Threads;
 import org.slf4j.Logger;
@@ -69,11 +70,14 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -164,6 +168,8 @@ public class BigQueryEventConsumer implements EventConsumer {
   private static final Gson GSON = new Gson();
   private static final String RETAIN_STAGING_TABLE = "retain.staging.table";
   private static final String DIRECT_LOADING_IN_PROGRESS_PREFIX = "bigquery-direct-load-in-progress-";
+  private static final Set<String> BQ_ABORT_REASONS = new HashSet<>(Arrays.asList("invalid", "invalidQuery"));
+  private static final int BQ_INVALID_REQUEST_CODE = 400;
 
   private final DeltaTargetContext context;
   private final BigQuery bigQuery;
@@ -316,15 +322,30 @@ public class BigQueryEventConsumer implements EventConsumer {
     String normalizedStagingTableName = normalizedTableName == null ? null :
       BigQueryUtils.normalizeTableName(stagingTablePrefix + normalizedTableName);
 
-    runWithRetries(ctx -> handleDDL(event, normalizedDatabaseName, normalizedTableName, normalizedStagingTableName),
-                   baseRetryDelay,
-                   normalizedDatabaseName,
-                   event.getOperation().getSchemaName(),
-                   normalizedTableName,
-                   String.format("Failed to apply '%s' DDL event", event.getOperation()),
-                   String.format("Exhausted retries trying to apply '%s' DDL event", event.getOperation())
-    );
+    RetryPolicy<Object> retryPolicy = createBaseRetryPolicy(baseRetryDelay)
+      .abortOn(ex -> ex instanceof DeltaFailureException)
+      .onFailedAttempt(failureContext -> {
+        handleBigQueryFailure(normalizedDatabaseName, event.getOperation().getSchemaName(), normalizedTableName,
+                              String.format("Failed to apply '%s' DDL event",  GSON.toJson(event)), failureContext);
+      });
 
+    runWithRetryPolicy(
+      ctx -> {
+        try {
+          handleDDL(event, normalizedDatabaseName, normalizedTableName, normalizedStagingTableName);
+        } catch (BigQueryException ex) {
+          //Unsupported DDL Operation
+          if (ex.getCode() == BQ_INVALID_REQUEST_CODE && ex.getError() != null) {
+            BigQueryError error = ex.getError();
+            if (BQ_ABORT_REASONS.contains(error.getReason())) {
+              throw new DeltaFailureException("Non recoverable error in applying DDL event, aborting", ex);
+            }
+          }
+        }
+      },
+      retryPolicy, String.format("Exhausted retries trying to apply '%s' DDL event",
+                                 event.getOperation())
+    );
 
     latestOffset = event.getOffset();
 
@@ -1383,28 +1404,18 @@ public class BigQueryEventConsumer implements EventConsumer {
 
   private void runWithRetries(ContextualRunnable runnable, long retryDelay, String dataset, String schema, String table,
     String onFailedAttemptMessage, String retriesExhaustedMessage) throws DeltaFailureException, InterruptedException {
+
     RetryPolicy<Object> retryPolicy = createBaseRetryPolicy(retryDelay)
       .onFailedAttempt(failureContext -> {
-        Throwable t = failureContext.getLastFailure();
-        LOG.error(onFailedAttemptMessage, t);
-        //Logging error list
-        if (t instanceof BigQueryException) {
-          List<BigQueryError> errors = ((BigQueryException) t).getErrors();
-          if (errors != null) {
-            errors.forEach(err -> LOG.error(err.getMessage()));
-          }
-        }
-        // its ok to set table state every retry, because this is a no-op if there is no change to the state.
-        try {
-          context.setTableError(dataset, table, new ReplicationError(t));
-        } catch (Exception e) {
-          // setting table state is not a fatal error, log a warning and continue on
-          LOG.warn(String.format("Unable to set error state for table %s.%s.%s " +
-                                   "Replication state for the table may be incorrect.",
-                   dataset, schema, table), e);
-        }
+        handleBigQueryFailure(dataset, schema, table, onFailedAttemptMessage, failureContext);
       });
 
+    runWithRetryPolicy(runnable, retryPolicy, retriesExhaustedMessage);
+  }
+
+  private void runWithRetryPolicy(ContextualRunnable runnable, RetryPolicy<Object> retryPolicy,
+                                  String retriesExhaustedMessage)
+    throws DeltaFailureException, InterruptedException {
     try {
       Failsafe.with(retryPolicy).run(runnable);
     } catch (TimeoutExceededException e) {
@@ -1420,6 +1431,31 @@ public class BigQueryEventConsumer implements EventConsumer {
         throw (DeltaFailureException) e.getCause();
       }
       throw e;
+    }
+  }
+
+  private void handleBigQueryFailure(String dataset, String schema, String table, String onFailedAttemptMessage,
+                                     ExecutionAttemptedEvent<Object> failureContext) {
+    Throwable t = failureContext.getLastFailure();
+    LOG.error(onFailedAttemptMessage, t);
+    if (t.getCause() instanceof DeltaFailureException) {
+      t = t.getCause();
+    }
+    //Logging error list
+    if (t instanceof BigQueryException) {
+      List<BigQueryError> errors = ((BigQueryException) t).getErrors();
+      if (errors != null) {
+        errors.forEach(err -> LOG.error(err.getMessage()));
+      }
+    }
+    // its ok to set table state every retry, because this is a no-op if there is no change to the state.
+    try {
+      context.setTableError(dataset, table, new ReplicationError(t));
+    } catch (Exception e) {
+      // setting table state is not a fatal error, log a warning and continue on
+      LOG.warn(String.format("Unable to set error state for table %s.%s.%s " +
+                               "Replication state for the table may be incorrect.",
+                             dataset, schema, table), e);
     }
   }
 
