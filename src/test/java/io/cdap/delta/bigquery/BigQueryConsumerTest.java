@@ -240,12 +240,12 @@ public class BigQueryConsumerTest {
                                                                     EMPTY_DATASET_NAME, false);
     eventConsumer.start();
 
-    generateInsertEvents(eventConsumer, tables, numInsertEvents);
+    generateInsertCDCEvents(eventConsumer, tables, numInsertEvents);
 
     //Wait for flush with some buffer
     Thread.sleep(TimeUnit.SECONDS.toMillis(LOAD_INTERVAL_SECONDS + 2));
 
-    generateInsertEvents(eventConsumer, tables, numInsertEvents);
+    generateInsertCDCEvents(eventConsumer, tables, numInsertEvents);
 
     //Wait for flush with some buffer
     Thread.sleep(TimeUnit.SECONDS.toMillis(LOAD_INTERVAL_SECONDS + 2));
