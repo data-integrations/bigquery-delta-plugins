@@ -17,8 +17,12 @@ package io.cdap.delta.bigquery;
 
 import com.google.cloud.WriteChannel;
 import com.google.cloud.bigquery.BigQuery;
+import com.google.cloud.bigquery.BigQueryError;
+import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.DatasetInfo;
 import com.google.cloud.bigquery.Job;
+import com.google.cloud.bigquery.JobConfiguration;
+import com.google.cloud.bigquery.JobId;
 import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.JobStatus;
 import com.google.cloud.bigquery.Table;
@@ -47,6 +51,8 @@ import org.junit.runner.RunWith;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mock;
 import org.mockito.Mockito;
+import org.mockito.invocation.InvocationOnMock;
+import org.mockito.stubbing.Answer;
 import org.powermock.api.mockito.PowerMockito;
 import org.powermock.core.classloader.annotations.PrepareForTest;
 import org.powermock.modules.junit4.PowerMockRunner;
@@ -72,12 +78,14 @@ public class BigQueryConsumerTest {
   private static final String TABLE_NAME_PREFIX = "table_";
   private static final String DATABASE = "database";
   private static final int LOAD_INTERVAL_SECONDS = 4;
+  private static final int LOAD_INTERVAL_ONE_SECOND = 1;
   private static final String DATASET = "dataset";
   private static final String EMPTY_DATASET_NAME = "";
   private static final String BUCKET = "bucket";
   private static final String TABLE = "table";
   private static final String PRIMARY_KEY_COL = "id";
   private static final String NAME_COL = "name";
+  private static final String MERGE_JOB = "merge";
   private static final long GENERATION = 1L;
   private static final int BQ_JOB_TIME_BOUND = 2;
   private static final int MAX_RETRY_SECONDS = 10;
@@ -87,6 +95,7 @@ public class BigQueryConsumerTest {
                                                        Schema.Field.of(PRIMARY_KEY_COL, Schema.of(Schema.Type.INT)),
                                                        Schema.Field.of(NAME_COL, Schema.of(Schema.Type.STRING)));
   private static final BlobId blobId = BlobId.of(BUCKET, TABLE, GENERATION);
+  private static final int WAIT_BUFFER_SEC = 2;
 
   @Mock
   private DeltaTargetContext deltaTargetContext;
@@ -109,7 +118,7 @@ public class BigQueryConsumerTest {
 
   @Before
   public void setup() throws Exception {
-    Mockito.when(deltaTargetContext.getMaxRetrySeconds()).thenReturn(MAX_RETRY_SECONDS);
+    Mockito.when(deltaTargetContext.getMaxRetrySeconds()).thenReturn(MAX_RETRY_SECONDS).getMock();
     Mockito.when(bucket.getName()).thenReturn(BUCKET);
     Mockito.when(storage.writer(Mockito.any(BlobInfo.class))).thenReturn(writeChannel);
     Mockito.when(storage.get(Mockito.any(BlobId.class))).thenReturn(blob);
@@ -149,10 +158,10 @@ public class BigQueryConsumerTest {
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
-    generateInsertEvents(eventConsumer, tables, numInsertEvents);
+    generateInsertCDCEvents(eventConsumer, tables, numInsertEvents);
 
     //Wait for flush with some buffer
-    Thread.sleep(TimeUnit.SECONDS.toMillis(LOAD_INTERVAL_SECONDS + 2));
+    waitForFlushWithBuffer(LOAD_INTERVAL_SECONDS, 1);
 
     Mockito.verify(dataFileWriter, Mockito.times(numTables * numInsertEvents))
       .append(Mockito.any());
@@ -176,7 +185,7 @@ public class BigQueryConsumerTest {
     LOG.info("Wait for load interval");
     //Let another round of load interval to pass so that we can verify
     //that no BQ jobs are fired after closing consumer
-    Thread.sleep(TimeUnit.SECONDS.toMillis(LOAD_INTERVAL_SECONDS + 2));
+    waitForFlushWithBuffer(LOAD_INTERVAL_SECONDS, 1);
 
     Mockito.verifyNoMoreInteractions(job, bigQuery);
   }
@@ -196,10 +205,10 @@ public class BigQueryConsumerTest {
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
-    generateInsertEvents(eventConsumer, tables, numInsertEvents);
+    generateInsertCDCEvents(eventConsumer, tables, numInsertEvents);
 
     //Wait for flush with some buffer
-    Thread.sleep(TimeUnit.SECONDS.toMillis(LOAD_INTERVAL_SECONDS + 2));
+    waitForFlushWithBuffer(LOAD_INTERVAL_SECONDS, 1);
 
     Mockito.verify(dataFileWriter, Mockito.times(numInsertEvents)).append(Mockito.any());
     Mockito.verify(dataFileWriter, Mockito.atLeast(numTables)).close();
@@ -231,12 +240,12 @@ public class BigQueryConsumerTest {
                                                                     EMPTY_DATASET_NAME, false);
     eventConsumer.start();
 
-    generateInsertEvents(eventConsumer, tables, numInsertEvents);
+    generateInsertCDCEvents(eventConsumer, tables, numInsertEvents);
 
     //Wait for flush with some buffer
     Thread.sleep(TimeUnit.SECONDS.toMillis(LOAD_INTERVAL_SECONDS + 2));
 
-    generateInsertEvents(eventConsumer, tables, numInsertEvents);
+    generateInsertCDCEvents(eventConsumer, tables, numInsertEvents);
 
     //Wait for flush with some buffer
     Thread.sleep(TimeUnit.SECONDS.toMillis(LOAD_INTERVAL_SECONDS + 2));
@@ -253,8 +262,319 @@ public class BigQueryConsumerTest {
     eventConsumer.stop();
   }
 
+  public void testConsumerCommitFailureRetries() throws Exception {
+    int numTables = 1;
+    int numInsertEvents = 5;
+
+    List<String> tables = getTables(numTables);
+
+    Throwable error = new Throwable("network error");
+    SuccessAfterNFailures answer = new SuccessAfterNFailures(3, error);
+    Mockito.doAnswer(answer)
+      .when(deltaTargetContext)
+      .commitOffset(Mockito.any(Offset.class), Mockito.anyLong());
+
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
+                                                                    bigQuery, bucket, "project",
+                                                                    LOAD_INTERVAL_ONE_SECOND, "_staging",
+                                                                    false, null, 2L,
+                                                                    DATASET, false);
+    eventConsumer.start();
+
+    generateDDL(eventConsumer, tables);
+    generateInsertCDCEvents(eventConsumer, tables, numInsertEvents);
+
+    //Wait for flush with some buffer
+    waitForFlushWithBuffer(LOAD_INTERVAL_ONE_SECOND, 10);
+
+    Mockito.verify(dataFileWriter, Mockito.times(numTables * numInsertEvents))
+      .append(Mockito.any());
+    Mockito.verify(dataFileWriter, Mockito.atLeast(numTables)).close();
+    Mockito.verify(bigQuery, Mockito.times(1)).create(datasetIs(DATASET));
+    Mockito.verify(bigQuery, Mockito.atLeastOnce()).getTable(Mockito.any(TableId.class));
+    //Mocks are setup such that the table already exists (for simplicity)
+    Mockito.verify(bigQuery, Mockito.never()).create(Mockito.any(TableInfo.class));
+    //Load and merge jobs
+    Mockito.verify(bigQuery, Mockito.atLeast(numTables)).create(Mockito.any(JobInfo.class));
+    //Delete staging table
+    Mockito.verify(bigQuery, Mockito.times(numTables)).delete(Mockito.any(TableId.class));
+    //Verify there were 3 retries
+    Mockito.verify(deltaTargetContext, Mockito.atLeast(3))
+      .commitOffset(Mockito.any(Offset.class), Mockito.anyLong());
+
+    eventConsumer.stop();
+  }
+
+  /**
+   *  Test checks retry handling in case of create and get status failure for load job
+   *
+   *  First attempt - failure on job wait call after it was created
+   *  Second attempt - previous attempt is found, but again failure in job wait
+   *  Third attempt - Job for second attempt is not found, but job for first attempt is found
+   *                  which was successful
+   *
+   *
+   * @throws Exception
+   */
+  @Test
+  public void testLoadJobRetriesCheckPreviousAttemptStatus() throws Exception {
+    int numTables = 1;
+    int numInsertEvents = 5;
+
+    List<String> tables = getTables(numTables);
+
+    Throwable error = new Throwable("network error");
+    Job waitForFailure = Mockito.mock(Job.class);
+    Mockito.when(waitForFailure.waitFor(Mockito.any())).thenThrow(new BigQueryException(403, "error", error));
+
+    Mockito.when(bigQuery.create(isJobType(JobConfiguration.Type.LOAD), Mockito.any()))
+      .thenReturn(waitForFailure);
+
+    Mockito
+      .doReturn(waitForFailure)
+      .doReturn(job)
+      .when(bigQuery).getJob(isForAttempt(0));
+
+    Mockito
+      .doReturn(null)
+      .when(bigQuery).getJob(isForAttempt(1));
+
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
+                                                                    bigQuery, bucket, "project",
+                                                                    LOAD_INTERVAL_ONE_SECOND, "_staging",
+                                                                    false, null, 2L,
+                                                                    DATASET, false);
+    eventConsumer.start();
+
+    generateDDL(eventConsumer, tables);
+    generateInsertCDCEvents(eventConsumer, tables, numInsertEvents);
+
+    //Wait for flush with some buffer
+    waitForFlushWithBuffer(LOAD_INTERVAL_ONE_SECOND, 10);
+
+    Mockito.verify(dataFileWriter, Mockito.times(numTables * numInsertEvents))
+      .append(Mockito.any());
+    Mockito.verify(dataFileWriter, Mockito.atLeast(numTables)).close();
+    Mockito.verify(bigQuery, Mockito.times(1)).create(datasetIs(DATASET));
+    Mockito.verify(bigQuery, Mockito.atLeastOnce()).getTable(Mockito.any(TableId.class));
+    //Mocks are setup such that the table already exists (for simplicity)
+    Mockito.verify(bigQuery, Mockito.never()).create(Mockito.any(TableInfo.class));
+    //1 query(find max seq num), 1 Load, 1 merge jobs
+    Mockito.verify(bigQuery, Mockito.times(3)).create(Mockito.any(JobInfo.class));
+    //Delete staging table
+    Mockito.verify(bigQuery, Mockito.times(numTables)).delete(Mockito.any(TableId.class));
+
+    eventConsumer.stop();
+  }
+
+  /**
+   * Test checks retry handling in case of get status failure for load job which is in error state
+   *
+   *  First attempt - failure on job wait call after it was created
+   *  Second attempt - previous attempt is found, but it was in failed state so new job is created and is successful
+   *
+   * @throws Exception
+   */
+  @Test
+  public void testLoadJobRetriesCheckPreviousAttemptWasFailed() throws Exception {
+    int numTables = 1;
+    int numInsertEvents = 5;
+
+    List<String> tables = getTables(numTables);
+
+    Throwable error = new Throwable("network error");
+
+    Job waitForFailureJob = Mockito.mock(Job.class);
+    Mockito.when(waitForFailureJob.waitFor(Mockito.any())).thenThrow(new BigQueryException(403, "error", error));
+
+    Job errorJob = Mockito.mock(Job.class);
+    Mockito.when(errorJob.getStatus()).thenReturn(Mockito.mock(JobStatus.class));
+    Mockito.when(errorJob.getStatus().getState()).thenReturn(JobStatus.State.DONE);
+    Mockito.when(errorJob.getStatus().getError()).thenReturn(new BigQueryError("reason", "location", "error"));
+
+    Mockito.when(bigQuery.create(isJobType(JobConfiguration.Type.LOAD), Mockito.any()))
+      .thenReturn(waitForFailureJob)
+      .thenReturn(job);
+
+    Mockito
+      .doReturn(waitForFailureJob)
+      .doReturn(errorJob)
+      .when(bigQuery).getJob(isForAttempt(0));
+
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
+                                                                    bigQuery, bucket, "project",
+                                                                    LOAD_INTERVAL_ONE_SECOND, "_staging",
+                                                                    false, null, 2L,
+                                                                    DATASET, false);
+    eventConsumer.start();
+
+    generateDDL(eventConsumer, tables);
+    generateInsertCDCEvents(eventConsumer, tables, numInsertEvents);
+
+    //Wait for flush with some buffer
+    waitForFlushWithBuffer(LOAD_INTERVAL_ONE_SECOND, 10);
+
+    Mockito.verify(dataFileWriter, Mockito.times(numTables * numInsertEvents))
+      .append(Mockito.any());
+    Mockito.verify(dataFileWriter, Mockito.atLeast(numTables)).close();
+    Mockito.verify(bigQuery, Mockito.times(1)).create(datasetIs(DATASET));
+    Mockito.verify(bigQuery, Mockito.atLeastOnce()).getTable(Mockito.any(TableId.class));
+    //Mocks are setup such that the table already exists (for simplicity)
+    Mockito.verify(bigQuery, Mockito.never()).create(Mockito.any(TableInfo.class));
+    //1 query(find max seq num), 2 Load, 1 merge jobs
+    Mockito.verify(bigQuery, Mockito.times(4)).create(Mockito.any(JobInfo.class));
+    //Delete staging table
+    Mockito.verify(bigQuery, Mockito.times(numTables)).delete(Mockito.any(TableId.class));
+
+    eventConsumer.stop();
+  }
+
+  /**
+   *  Test checks retry handling in case of create and get status failure for load job
+   *
+   *  First attempt - failure on job wait call after it was created
+   *  Second attempt - previous attempt is found, but again failure in job wait
+   *  Third attempt - Job for second attempt is not found, but job for first attempt is found
+   *                  which was successful
+   *
+   *
+   * @throws Exception
+   */
+  @Test
+  public void testMergeJobRetriesCheckPreviousAttemptStatus() throws Exception {
+    int numTables = 1;
+    int numInsertEvents = 5;
+
+    List<String> tables = getTables(numTables);
+
+    Throwable error = new Throwable("network error");
+    Job waitForFailure = Mockito.mock(Job.class);
+    Mockito.when(waitForFailure.waitFor(Mockito.any())).thenThrow(new BigQueryException(403, "error", error));
+
+    Mockito.when(bigQuery.create(isJobTypeAndCategory(JobConfiguration.Type.QUERY, MERGE_JOB), Mockito.any()))
+      .thenReturn(waitForFailure);
+
+    Mockito
+      .doReturn(waitForFailure)
+      .doReturn(job)
+      .when(bigQuery).getJob(isForAttempt(0));
+
+    Mockito
+      .doReturn(null)
+      .when(bigQuery).getJob(isForAttempt(1));
+
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
+                                                                    bigQuery, bucket, "project",
+                                                                    LOAD_INTERVAL_ONE_SECOND, "_staging",
+                                                                    false, null, 2L,
+                                                                    DATASET, false);
+    eventConsumer.start();
+
+    generateDDL(eventConsumer, tables);
+    generateInsertCDCEvents(eventConsumer, tables, numInsertEvents);
+
+    //Wait for flush with some buffer
+    waitForFlushWithBuffer(LOAD_INTERVAL_ONE_SECOND, 10);
+
+    Mockito.verify(dataFileWriter, Mockito.times(numTables * numInsertEvents))
+      .append(Mockito.any());
+    Mockito.verify(dataFileWriter, Mockito.atLeast(numTables)).close();
+    Mockito.verify(bigQuery, Mockito.times(1)).create(datasetIs(DATASET));
+    Mockito.verify(bigQuery, Mockito.atLeastOnce()).getTable(Mockito.any(TableId.class));
+    //Mocks are setup such that the table already exists (for simplicity)
+    Mockito.verify(bigQuery, Mockito.never()).create(Mockito.any(TableInfo.class));
+    //1 query(find max seq num), 1 Load, 1 merge jobs
+    Mockito.verify(bigQuery, Mockito.times(3)).create(Mockito.any(JobInfo.class));
+    //Delete staging table
+    Mockito.verify(bigQuery, Mockito.times(numTables)).delete(Mockito.any(TableId.class));
+
+    eventConsumer.stop();
+  }
+
+  /**
+   *  Test checks retry handling in case of get status failure for merge job which is in error state
+   *
+   *   First attempt - failure on job wait call after it was created
+   *   Second attempt - previous attempt is found, but it was in failed state so new job is created and is
+   *                    successful
+   *
+   * @throws Exception
+   */
+  @Test
+  public void testMergeJobRetriesCheckPreviousAttemptWasFailed() throws Exception {
+    int numTables = 1;
+    int numInsertEvents = 5;
+
+    List<String> tables = getTables(numTables);
+
+    Throwable error = new Throwable("network error");
+
+    Job waitForFailureJob = Mockito.mock(Job.class);
+    Mockito.when(waitForFailureJob.waitFor(Mockito.any())).thenThrow(new BigQueryException(403, "error", error));
+
+    Job errorJob = Mockito.mock(Job.class);
+    Mockito.when(errorJob.getStatus()).thenReturn(Mockito.mock(JobStatus.class));
+    Mockito.when(errorJob.getStatus().getState()).thenReturn(JobStatus.State.DONE);
+    Mockito.when(errorJob.getStatus().getError()).thenReturn(new BigQueryError("reason", "location", "error"));
+
+    Mockito.when(bigQuery.create(isJobTypeAndCategory(JobConfiguration.Type.QUERY, MERGE_JOB), Mockito.any()))
+      .thenReturn(waitForFailureJob)
+      .thenReturn(job);
+
+    Mockito
+      .doReturn(errorJob)
+      .when(bigQuery).getJob(isForAttempt(0));
+
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
+                                                                    bigQuery, bucket, "project",
+                                                                    LOAD_INTERVAL_ONE_SECOND, "_staging",
+                                                                    false, null, 2L,
+                                                                    DATASET, false);
+    eventConsumer.start();
+
+    generateDDL(eventConsumer, tables);
+    generateInsertCDCEvents(eventConsumer, tables, numInsertEvents);
+
+    //Wait for flush with some buffer
+    waitForFlushWithBuffer(LOAD_INTERVAL_ONE_SECOND, 4);
+
+    Mockito.verify(dataFileWriter, Mockito.times(numTables * numInsertEvents))
+      .append(Mockito.any());
+    Mockito.verify(dataFileWriter, Mockito.atLeast(numTables)).close();
+    Mockito.verify(bigQuery, Mockito.times(1)).create(datasetIs(DATASET));
+    Mockito.verify(bigQuery, Mockito.atLeastOnce()).getTable(Mockito.any(TableId.class));
+    //Mocks are setup such that the table already exists (for simplicity)
+    Mockito.verify(bigQuery, Mockito.never()).create(Mockito.any(TableInfo.class));
+    //1 query(find max seq num), 1 Load, 2 merge jobs
+    Mockito.verify(bigQuery, Mockito.times(4)).create(Mockito.any(JobInfo.class));
+    //Delete staging table
+    Mockito.verify(bigQuery, Mockito.times(numTables)).delete(Mockito.any(TableId.class));
+
+    eventConsumer.stop();
+  }
+
+  private JobId isForAttempt(int i) {
+    return Mockito.argThat(jobId -> {
+                             return jobId.getJob().endsWith("_" + i);
+                           });
+  }
+
+  private void waitForFlushWithBuffer(int loadIntervalSeconds, int flushCount) throws InterruptedException {
+    Thread.sleep(TimeUnit.SECONDS.toMillis(flushCount * (loadIntervalSeconds + WAIT_BUFFER_SEC)));
+  }
+
+  private JobInfo isJobType(JobConfiguration.Type jobType) {
+    return Mockito.argThat(jobInfo -> jobInfo.getConfiguration().getType() == jobType);
+  }
+
+  private JobInfo isJobTypeAndCategory(JobConfiguration.Type jobType, String category) {
+    return Mockito.argThat(
+      jobInfo -> jobInfo.getConfiguration().getType() == jobType
+        && jobInfo.getJobId().getJob().contains(category));
+  }
+
   private DatasetInfo datasetIs(String database) {
-    return Mockito.argThat(arg -> arg.getDatasetId().getDataset().equals(database));
+    return Mockito.argThat(datasetInfo -> datasetInfo.getDatasetId().getDataset().equals(database));
   }
 
   private List<String> getTables(int n) {
@@ -283,8 +603,8 @@ public class BigQueryConsumerTest {
     }
   }
 
-  private void generateInsertEvents(BigQueryEventConsumer eventConsumer, List<String> tables,
-                                    int numEvents) throws Exception {
+  private void generateInsertCDCEvents(BigQueryEventConsumer eventConsumer, List<String> tables,
+                                       int numEvents) throws Exception {
     final AtomicInteger seq = new AtomicInteger(0);
 
     for (String tableName : tables) {
@@ -305,6 +625,26 @@ public class BigQueryConsumerTest {
           .build();
         eventConsumer.applyDML(new Sequenced<>(insert1Event, seq.incrementAndGet()));
       }
+    }
+  }
+
+  static class SuccessAfterNFailures implements Answer<Void> {
+    private final int totalFailures;
+    private final Throwable error;
+    private AtomicInteger currFailures;
+
+    SuccessAfterNFailures(int totalFailures, Throwable error) {
+      this.error = error;
+      this.currFailures = new AtomicInteger();
+      this.totalFailures = totalFailures;
+    }
+
+    @Override
+    public Void answer(InvocationOnMock invocation) throws Throwable {
+      if (currFailures.incrementAndGet() <= totalFailures) {
+        throw error;
+      }
+      return null;
     }
   }
 }
