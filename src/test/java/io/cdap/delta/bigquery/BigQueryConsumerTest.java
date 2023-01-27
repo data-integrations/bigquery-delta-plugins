@@ -67,6 +67,7 @@ import java.io.OutputStream;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
@@ -241,7 +242,7 @@ public class BigQueryConsumerTest {
 
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
                                                                     bigQuery, bucket, "project",
-                                                                    LOAD_INTERVAL_SECONDS, "_staging",
+                                                                    LOAD_INTERVAL_ONE_SECOND, "_staging",
                                                                     false, null, 2L,
                                                                     EMPTY_DATASET_NAME, false);
     eventConsumer.start();
@@ -249,19 +250,19 @@ public class BigQueryConsumerTest {
     generateInsertEvents(eventConsumer, tables, numInsertEvents, CDC);
 
     //Wait for flush with some buffer
-    Thread.sleep(TimeUnit.SECONDS.toMillis(LOAD_INTERVAL_SECONDS + 2));
+    waitForFlushWithBuffer(LOAD_INTERVAL_ONE_SECOND, 1);
 
-    generateInsertEvents(eventConsumer, tables, numInsertEvents, CDC);
+    generateInsertEvents(eventConsumer, tables, numInsertEvents, CDC, 10);
 
     //Wait for flush with some buffer
-    Thread.sleep(TimeUnit.SECONDS.toMillis(LOAD_INTERVAL_SECONDS + 2));
+    waitForFlushWithBuffer(LOAD_INTERVAL_ONE_SECOND, 1);
 
     //Verify primary keys were fetched only once from state store and then cached
     Mockito.verify(deltaTargetContext, Mockito.times(1)).getState(Mockito.any());
     Mockito.verify(dataFileWriter, Mockito.times(2)).close();
     //Mocks are setup such that the table already exists (for simplicity)
-    //Load and merge jobs
-    Mockito.verify(bigQuery, Mockito.atLeast(2)).create(Mockito.any(JobInfo.class));
+    //max sequence num, load and merge jobs
+    Mockito.verify(bigQuery, Mockito.atLeast(3)).create(Mockito.any(JobInfo.class));
     //Delete staging table
     Mockito.verify(bigQuery, Mockito.times(2)).delete(Mockito.any(TableId.class));
 
@@ -661,7 +662,11 @@ public class BigQueryConsumerTest {
 
   private void generateInsertEvents(BigQueryEventConsumer eventConsumer, List<String> tables,
                                     int numEvents, boolean isSnapshot) throws Exception {
-    final AtomicInteger seq = new AtomicInteger(0);
+    generateInsertEvents(eventConsumer, tables, numEvents, isSnapshot, 0);
+  }
+  private void generateInsertEvents(BigQueryEventConsumer eventConsumer, List<String> tables,
+                                    int numEvents, boolean isSnapshot, Integer seqNum) throws Exception {
+    final AtomicInteger seq = new AtomicInteger(seqNum);
 
     for (String tableName : tables) {
       for (int num = 0; num < numEvents; num++) {
