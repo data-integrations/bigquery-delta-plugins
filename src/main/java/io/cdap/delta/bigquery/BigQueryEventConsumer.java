@@ -164,9 +164,6 @@ public class BigQueryEventConsumer implements EventConsumer {
   private static final Gson GSON = new Gson();
   private static final String RETAIN_STAGING_TABLE = "retain.staging.table";
   private static final String DIRECT_LOADING_IN_PROGRESS_PREFIX = "bigquery-direct-load-in-progress-";
-  public static final String MERGE_JOB_TYPE = "merge";
-  public static final String LOAD_STAGING_JOB_TYPE = "stage";
-  public static final String LOAD_TARGET_JOB_TYPE = "load";
 
   private final DeltaTargetContext context;
   private final BigQuery bigQuery;
@@ -196,6 +193,27 @@ public class BigQueryEventConsumer implements EventConsumer {
   private long latestSequenceNum;
   private Exception flushException;
   private final AtomicBoolean shouldStop;
+
+  private enum JobType {
+    LOAD_STAGING("stage", false), LOAD_TARGET("load", true), MERGE_TARGET("merge", true);
+
+    private final String id;
+    private final boolean forTargetTable;
+
+    JobType(String id, boolean forTargetTable) {
+      this.id = id;
+      this.forTargetTable = forTargetTable;
+    }
+
+    public String getId() {
+      return id;
+    }
+
+    public boolean isForTargetTable() {
+      return forTargetTable;
+    }
+  }
+
   // have to keep all the records in memory in case there is a failure writing to GCS
   // cannot write to a temporary file on local disk either in case there is a failure writing to disk
   // Without keeping the entire batch in memory, there would be no way to recover the records that failed to write
@@ -680,7 +698,7 @@ public class BigQueryEventConsumer implements EventConsumer {
               blob.getDataset(), blob.getTable());
     TableId targetTableId = TableId.of(project, blob.getDataset(), blob.getTable());
     long retryDelay = Math.min(91, context.getMaxRetrySeconds()) - 1;
-    runWithRetries(runContext -> loadTable(targetTableId, blob, true, runContext.getAttemptCount()),
+    runWithRetries(runContext -> loadTable(targetTableId, blob, JobType.LOAD_TARGET, runContext.getAttemptCount()),
                    retryDelay,
                    blob.getDataset(),
                    blob.getSourceDbSchemaName(),
@@ -703,7 +721,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     String normalizedStagingTableName = BigQueryUtils.normalizeTableName(stagingTablePrefix + blob.getTable());
     TableId stagingTableId = TableId.of(project, blob.getDataset(), normalizedStagingTableName);
     long retryDelay = Math.min(91, context.getMaxRetrySeconds()) - 1;
-    runWithRetries(runContext -> loadTable(stagingTableId, blob, false, runContext.getAttemptCount()),
+    runWithRetries(runContext -> loadTable(stagingTableId, blob, JobType.LOAD_STAGING, runContext.getAttemptCount()),
                    retryDelay,
                    blob.getDataset(),
                    blob.getSourceDbSchemaName(),
@@ -737,30 +755,21 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
   }
 
-  private void loadTable(TableId tableId, TableBlob blob, boolean directLoadToTarget, int attemptNumber)
+  private void loadTable(TableId tableId, TableBlob blob, JobType jobType, int attemptNumber)
     throws InterruptedException, IOException, DeltaFailureException {
     LOG.info("Loading batch {} of {} events into {} table for {}.{} {}", blob.getBatchId(), blob.getNumEvents(),
-             directLoadToTarget ? "target" : "staging", blob.getDataset(), blob.getTable(),
+             jobType.isForTargetTable() ? "target" : "staging", blob.getDataset(), blob.getTable(),
              attemptNumber > 0 ? "attempt: " + attemptNumber : "");
 
     Job loadJob = null;
     if (attemptNumber > 0) {
       // Check if any job from previous attempts was successful to avoid loading the same data multiple times
       // which can lead to data inconsistency
-      Job previousJob = getJobFromPreviousAttemptsIfExists(getLoadJobType(directLoadToTarget), blob, attemptNumber);
-      if (previousJob != null) {
-        if (isFailedJob(previousJob)) {
-          LOG.warn("Previous job {} failed with error {} attempting to run a new job", previousJob,
-                   previousJob.getStatus().getError());
-        } else {
-          //Previous job did not fail, check its status instead of creating a new job
-          loadJob = previousJob;
-        }
-      }
+      loadJob = getPreviousJobIfNotFailed(blob, attemptNumber, jobType);
     }
 
     if (loadJob == null) {
-      loadJob = createLoadJob(tableId, blob, directLoadToTarget, attemptNumber);
+      loadJob = createLoadJob(tableId, blob, attemptNumber, jobType);
     }
 
     Job completedJob = loadJob.waitFor();
@@ -778,7 +787,20 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
   }
 
-  private Job createLoadJob(TableId tableId, TableBlob blob, boolean directLoadToTarget, int attemptNumber)
+  private Job getPreviousJobIfNotFailed(TableBlob blob, int attemptNumber, JobType jobType) {
+    Job previousJob = getJobFromPreviousAttemptsIfExists(blob, attemptNumber, jobType);
+    if (previousJob != null) {
+      if (isFailedJob(previousJob)) {
+        LOG.warn("Previous job {} failed with error {} attempting to run a new job", previousJob,
+                 previousJob.getStatus().getError());
+      } else {
+        return previousJob;
+      }
+    }
+    return null;
+  }
+
+  private Job createLoadJob(TableId tableId, TableBlob blob, int attemptNumber, JobType jobType)
     throws IOException, DeltaFailureException {
     Table table = bigQuery.getTable(tableId);
     if (table == null) {
@@ -803,15 +825,14 @@ public class BigQueryEventConsumer implements EventConsumer {
     // guaranteed to be different from the previous batch for the table
     JobId jobId = JobId.newBuilder()
       .setLocation(bucket.getLocation())
-      .setJob(getJobId(getLoadJobType(directLoadToTarget), blob.getDataset(), blob.getTable(),
-                       blob.getBatchId(), attemptNumber))
+      .setJob(getJobId(jobType, blob.getDataset(), blob.getTable(), blob.getBatchId(), attemptNumber))
       .build();
     BlobId blobId = blob.getBlob().getBlobId();
     String uri = String.format("gs://%s/%s", blobId.getBucket(), blobId.getName());
 
     // Explicitly set schema for load jobs
     com.google.cloud.bigquery.Schema bqSchema
-      = Schemas.convert(directLoadToTarget ? blob.getTargetSchema() : blob.getStagingSchema());
+      = Schemas.convert(jobType.isForTargetTable()  ? blob.getTargetSchema() : blob.getStagingSchema());
     LoadJobConfiguration.Builder jobConfigBuilder = LoadJobConfiguration
       .newBuilder(tableId, uri)
       .setSchema(bqSchema)
@@ -832,10 +853,6 @@ public class BigQueryEventConsumer implements EventConsumer {
     return BigQueryUtils.createBigQueryJob(bigQuery, jobInfo);
   }
 
-  private String getLoadJobType(boolean directLoadToTarget) {
-    return directLoadToTarget ? LOAD_TARGET_JOB_TYPE : LOAD_STAGING_JOB_TYPE;
-  }
-
   private void mergeStagingTable(TableId stagingTableId, TableBlob blob,
                                  int attemptNumber) throws InterruptedException, IOException, DeltaFailureException {
 
@@ -846,16 +863,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     if (attemptNumber > 0) {
       // Check if any job from previous attempts was successful to avoid merging the same data multiple times
       // which can lead to data inconsistency
-      Job previousJob = getJobFromPreviousAttemptsIfExists(MERGE_JOB_TYPE, blob, attemptNumber);
-      if (previousJob != null) {
-        if (isFailedJob(previousJob)) {
-          LOG.warn("Previous job {} had failed with error {} attempting to run a new job", previousJob,
-                   previousJob.getStatus().getError());
-        } else {
-          //Previous job did not fail, check its status instead of creating a new job
-          mergeJob = previousJob;
-        }
-      }
+      mergeJob = getPreviousJobIfNotFailed(blob, attemptNumber, JobType.MERGE_TARGET);
     }
 
     if (mergeJob == null) {
@@ -1094,7 +1102,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     // event in the batch was seen
     JobId jobId = JobId.newBuilder()
       .setLocation(bucket.getLocation())
-      .setJob(getJobId(MERGE_JOB_TYPE, blob.getDataset(), blob.getTable(), blob.getBatchId(), attemptNumber))
+      .setJob(getJobId(JobType.MERGE_TARGET, blob.getDataset(), blob.getTable(), blob.getBatchId(), attemptNumber))
       .build();
     JobInfo jobInfo = JobInfo.newBuilder(mergeJobConf)
       .setJobId(jobId)
@@ -1348,13 +1356,13 @@ public class BigQueryEventConsumer implements EventConsumer {
    * while iterating from the provided (attemptNumber - 1) to 0
    * Existence of the job is checked by creating deterministic job Id containing attempt number
    *
-   * @param jobType job type to create deterministic job Id
    * @param blob blob to create deterministic job Id
    * @param attemptNumber attempt number below which to check previous jobs
+   * @param jobType job type to create deterministic job Id
    * @return first job which exists while iterating from the provided
    * (attemptNumber - 1) to 0, null if no job exists
    */
-  private Job getJobFromPreviousAttemptsIfExists(String jobType, TableBlob blob, int attemptNumber) {
+  private Job getJobFromPreviousAttemptsIfExists(TableBlob blob, int attemptNumber, JobType jobType) {
     for (int prevAttemptNumber = attemptNumber - 1; prevAttemptNumber >= 0; prevAttemptNumber--) {
       JobId jobId = JobId.newBuilder()
         .setLocation(bucket.getLocation())
@@ -1565,8 +1573,8 @@ public class BigQueryEventConsumer implements EventConsumer {
     return String.format("bigquery-%s-%s", tableId.getDataset(), tableId.getTable());
   }
 
-  private String getJobId(String jobType, String dataset, String table, long batchId, int attemptNumber) {
-    return String.format("%s_%s_%s_%s_%d_%d", context.getApplicationName(), jobType, dataset,
+  private String getJobId(JobType jobType, String dataset, String table, long batchId, int attemptNumber) {
+    return String.format("%s_%s_%s_%s_%d_%d", context.getApplicationName(), jobType.getId(), dataset,
                          table, batchId, attemptNumber);
   }
 
