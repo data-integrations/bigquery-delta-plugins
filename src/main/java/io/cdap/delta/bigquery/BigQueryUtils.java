@@ -17,6 +17,7 @@
 package io.cdap.delta.bigquery;
 
 import com.google.cloud.bigquery.BigQuery;
+import com.google.cloud.bigquery.BigQueryError;
 import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.EncryptionConfiguration;
 import com.google.cloud.bigquery.FieldValue;
@@ -39,6 +40,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -68,6 +70,9 @@ public final class BigQueryUtils {
   private static final Pattern INVALID_TABLE_NAME_REGEX =
           Pattern.compile("[^\\p{L}\\p{M}\\p{N}\\p{Pc}\\p{Pd}\\p{Zs}]+");
   private static final String BIG_QUERY_DUPLICATE_ERROR = "duplicate";
+
+  private static final Set<String> BQ_ABORT_REASONS = new HashSet<>(Arrays.asList("invalid", "invalidQuery"));
+  private static final int BQ_INVALID_REQUEST_CODE = 400;
 
   private BigQueryUtils() {
   }
@@ -307,5 +312,21 @@ public final class BigQueryUtils {
       }
       throw e;
     }
+  }
+
+  /**
+   * Checks if BigQuery exception is due to invalid request
+   *
+   * @param ex {@link BigQueryException}
+   * @return true if BigQuery exception is due to invalid request
+   */
+  public static boolean isInvalidOperationError(BigQueryException ex) {
+    if (ex.getCode() == BQ_INVALID_REQUEST_CODE && ex.getError() != null) {
+      BigQueryError error = ex.getError();
+      if (BQ_ABORT_REASONS.contains(error.getReason())) {
+        return true;
+      }
+    }
+    return false;
   }
 }

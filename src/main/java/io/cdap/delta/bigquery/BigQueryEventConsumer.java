@@ -168,8 +168,6 @@ public class BigQueryEventConsumer implements EventConsumer {
   private static final Gson GSON = new Gson();
   private static final String RETAIN_STAGING_TABLE = "retain.staging.table";
   private static final String DIRECT_LOADING_IN_PROGRESS_PREFIX = "bigquery-direct-load-in-progress-";
-  private static final Set<String> BQ_ABORT_REASONS = new HashSet<>(Arrays.asList("invalid", "invalidQuery"));
-  private static final int BQ_INVALID_REQUEST_CODE = 400;
 
   private final DeltaTargetContext context;
   private final BigQuery bigQuery;
@@ -199,26 +197,6 @@ public class BigQueryEventConsumer implements EventConsumer {
   private long latestSequenceNum;
   private Exception flushException;
   private final AtomicBoolean shouldStop;
-
-  private enum JobType {
-    LOAD_STAGING("stage", false), LOAD_TARGET("load", true), MERGE_TARGET("merge", true);
-
-    private final String id;
-    private final boolean forTargetTable;
-
-    JobType(String id, boolean forTargetTable) {
-      this.id = id;
-      this.forTargetTable = forTargetTable;
-    }
-
-    public String getId() {
-      return id;
-    }
-
-    public boolean isForTargetTable() {
-      return forTargetTable;
-    }
-  }
 
   // have to keep all the records in memory in case there is a failure writing to GCS
   // cannot write to a temporary file on local disk either in case there is a failure writing to disk
@@ -1403,20 +1381,13 @@ public class BigQueryEventConsumer implements EventConsumer {
                               String onFailedAttemptMessage, String retriesExhaustedMessage)
     throws DeltaFailureException, InterruptedException {
 
-    runWithRetryPolicy(runnable, retriesExhaustedMessage,
-                       //Multiple level of policies to ensure invalid operations are retried few times only
-                       //Policies are applied in the order from last to first
-                       //Second level policy aborts on invalid operation failures
-                       createBaseRetryPolicy(retryDelay)
-                         .abortOn(this::isInvalidOperationError)
-                         .onFailedAttempt(failureContext -> {
-                           handleBigQueryFailure(dataset, schema, table, onFailedAttemptMessage, failureContext);
-                         }),
-                       //First level policy retries all errors few times only
-                       createBaseRetryPolicy(retryDelay, 3)
-                         .onFailedAttempt(failureContext -> {
-                           handleBigQueryFailure(dataset, schema, table, onFailedAttemptMessage, failureContext);
-                         }));
+    runWithRetryPolicy(runnable, retriesExhaustedMessage, createBaseRetryPolicy(retryDelay)
+      //Do not retry in case of invalid requests errors, but let the retrey happen from Worker
+      //which can potentially mitigate the issue
+      .abortOn(this::isInvalidOperationError)
+      .onFailedAttempt(failureContext -> {
+        handleBigQueryFailure(dataset, schema, table, onFailedAttemptMessage, failureContext);
+      }));
   }
 
   private void runWithRetryPolicy(ContextualRunnable runnable, String retriesExhaustedMessage,
@@ -1661,16 +1632,6 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   private boolean isInvalidOperationError(Throwable ex) {
-    return ex instanceof BigQueryException && isInvalidOperationError((BigQueryException) ex);
-  }
-
-  private boolean isInvalidOperationError(BigQueryException ex) {
-    if (ex.getCode() == BQ_INVALID_REQUEST_CODE && ex.getError() != null) {
-      BigQueryError error = ex.getError();
-      if (BQ_ABORT_REASONS.contains(error.getReason())) {
-        return true;
-      }
-    }
-    return false;
+    return ex instanceof BigQueryException && BigQueryUtils.isInvalidOperationError((BigQueryException) ex);
   }
 }
