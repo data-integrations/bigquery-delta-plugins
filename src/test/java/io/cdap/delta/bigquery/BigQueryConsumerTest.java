@@ -115,6 +115,8 @@ public class BigQueryConsumerTest {
   private Job job;
   @Mock
   private DataFileWriter dataFileWriter;
+  @Mock
+  private MultiGCSWriter gcsWriter;
 
   @Before
   public void setup() throws Exception {
@@ -126,6 +128,7 @@ public class BigQueryConsumerTest {
     Mockito.when(dataFileWriter.create(Mockito.any(org.apache.avro.Schema.class), Mockito.any(OutputStream.class)))
       .thenReturn(dataFileWriter);
     PowerMockito.whenNew(DataFileWriter.class).withAnyArguments().thenReturn(dataFileWriter);
+    PowerMockito.whenNew(MultiGCSWriter.class).withAnyArguments().thenReturn(gcsWriter);
 
     //Random execution time for BigQuery job
     Mockito.when(job.waitFor())
@@ -304,6 +307,37 @@ public class BigQueryConsumerTest {
 
     eventConsumer.stop();
   }
+
+  @Test
+  public void testGcsWriteInMemoryFailureRetries() throws Exception {
+    Mockito.doThrow(new IllegalStateException()).when(gcsWriter).write(Mockito.any());
+
+    StructuredRecord record = StructuredRecord.builder(schema)
+      .set(PRIMARY_KEY_COL, random.nextInt())
+      .set(NAME_COL, "alice")
+      .build();
+
+    DMLEvent insert1Event = DMLEvent.builder()
+      .setOperationType(DMLOperation.Type.INSERT)
+      .setDatabaseName(DATABASE)
+      .setTableName(TABLE)
+      .setRow(record)
+      .build();
+
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
+                                                                    bigQuery, bucket, "project",
+                                                                    LOAD_INTERVAL_ONE_SECOND, "_staging",
+                                                                    false, null, 2L,
+                                                                    DATASET, false);
+
+    try {
+      eventConsumer.applyDML(new Sequenced<>(insert1Event, 0));
+    } catch (IllegalStateException e) {
+      //Verify that retry happens
+      Mockito.verify(gcsWriter, Mockito.atLeast(2)).write(Mockito.any(Sequenced.class));
+    }
+  }
+
 
   /**
    *  Test checks retry handling in case of create and get status failure for load job

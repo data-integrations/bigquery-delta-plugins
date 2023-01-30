@@ -593,7 +593,12 @@ public class BigQueryEventConsumer implements EventConsumer {
       .setTableName(normalizedTableName)
       .build();
     long sequenceNumber = sequencedEvent.getSequenceNumber();
-    gcsWriter.write(new Sequenced<>(normalizedDMLEvent, sequenceNumber));
+    Failsafe.with(new RetryPolicy<>()
+                    .withMaxAttempts(25)
+                    .withMaxDuration(Duration.of(2, ChronoUnit.MINUTES))
+                    .withBackoff(1, 30, ChronoUnit.SECONDS)
+                    .withJitter(0.1))
+            .run(() -> gcsWriter.write(new Sequenced<>(normalizedDMLEvent, sequenceNumber)));
 
     TableId tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
 
