@@ -160,8 +160,8 @@ public class BigQueryConsumerTest {
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_SECONDS, "_staging",
-                                                                    CDC, null, 2L,
-                                                                    DATASET, CDC);
+                                                                    false, null, 2L,
+                                                                    DATASET, false);
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
@@ -207,8 +207,8 @@ public class BigQueryConsumerTest {
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_SECONDS, "_staging",
-                                                                    CDC, null, 2L,
-                                                                    EMPTY_DATASET_NAME, CDC);
+                                                                    false, null, 2L,
+                                                                    EMPTY_DATASET_NAME, false);
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
@@ -284,8 +284,8 @@ public class BigQueryConsumerTest {
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_ONE_SECOND, "_staging",
-                                                                    CDC, null, 2L,
-                                                                    DATASET, CDC);
+                                                                    false, null, 2L,
+                                                                    DATASET, false);
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
@@ -349,8 +349,8 @@ public class BigQueryConsumerTest {
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_ONE_SECOND, "_staging",
-                                                                    CDC, null, 2L,
-                                                                    DATASET, CDC);
+                                                                    false, null, 2L,
+                                                                    DATASET, false);
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
@@ -411,8 +411,8 @@ public class BigQueryConsumerTest {
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_ONE_SECOND, "_staging",
-                                                                    CDC, null, 2L,
-                                                                    DATASET, CDC);
+                                                                    false, null, 2L,
+                                                                    DATASET, false);
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
@@ -473,8 +473,8 @@ public class BigQueryConsumerTest {
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_ONE_SECOND, "_staging",
-                                                                    CDC, null, 2L,
-                                                                    DATASET, CDC);
+                                                                    false, null, 2L,
+                                                                    DATASET, false);
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
@@ -535,8 +535,8 @@ public class BigQueryConsumerTest {
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_ONE_SECOND, "_staging",
-                                                                    CDC, null, 2L,
-                                                                    DATASET, CDC);
+                                                                    false, null, 2L,
+                                                                    DATASET, false);
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
@@ -588,8 +588,8 @@ public class BigQueryConsumerTest {
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_ONE_SECOND, "_staging",
-                                                                    CDC, null, 2L,
-                                                                    DATASET, CDC);
+                                                                    false, null, 2L,
+                                                                    DATASET, false);
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
