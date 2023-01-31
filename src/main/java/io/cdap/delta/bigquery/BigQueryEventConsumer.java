@@ -593,7 +593,6 @@ public class BigQueryEventConsumer implements EventConsumer {
       .setTableName(normalizedTableName)
       .build();
     long sequenceNumber = sequencedEvent.getSequenceNumber();
-    gcsWriter.write(new Sequenced<>(normalizedDMLEvent, sequenceNumber));
 
     TableId tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
 
@@ -612,6 +611,8 @@ public class BigQueryEventConsumer implements EventConsumer {
     // so it's possible we see an event that was already merged to target table
     if (sequenceNumber > latestMergedSequencedNum) {
       latestSeenSequence.put(tableId, sequenceNumber);
+      //Only write events which have not already been applied
+      gcsWriter.write(new Sequenced<>(normalizedDMLEvent, sequenceNumber));
     }
 
     latestOffset = event.getOffset();
@@ -719,6 +720,7 @@ public class BigQueryEventConsumer implements EventConsumer {
 
   private void mergeTableChanges(TableBlob blob) throws DeltaFailureException, InterruptedException {
     String normalizedStagingTableName = BigQueryUtils.normalizeTableName(stagingTablePrefix + blob.getTable());
+
     TableId stagingTableId = TableId.of(project, blob.getDataset(), normalizedStagingTableName);
     long retryDelay = Math.min(91, context.getMaxRetrySeconds()) - 1;
     runWithRetries(runContext -> loadTable(stagingTableId, blob, JobType.LOAD_STAGING, runContext.getAttemptCount()),
@@ -808,9 +810,11 @@ public class BigQueryEventConsumer implements EventConsumer {
       Clustering clustering = maxClusteringColumns <= 0 ? null : Clustering.newBuilder()
         .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
         .build();
+
+      Schema schema = jobType.isForTargetTable() ? blob.getTargetSchema() : blob.getStagingSchema();
       TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
         .setLocation(bucket.getLocation())
-        .setSchema(Schemas.convert(blob.getStagingSchema()))
+        .setSchema(Schemas.convert(schema))
         .setClustering(clustering)
         .build();
       TableInfo.Builder builder = TableInfo.newBuilder(tableId, tableDefinition);
