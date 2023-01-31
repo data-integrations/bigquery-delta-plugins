@@ -193,6 +193,11 @@ public class BigQueryEventConsumer implements EventConsumer {
   private long latestSequenceNum;
   private Exception flushException;
   private final AtomicBoolean shouldStop;
+  private RetryPolicy<Object> gcsWriterRetryPolicy = new RetryPolicy<>()
+                                                .withMaxAttempts(25)
+                                                .withMaxDuration(Duration.of(2, ChronoUnit.MINUTES))
+                                                .withBackoff(1, 30, ChronoUnit.SECONDS)
+                                                .withJitter(0.1);
 
   private enum JobType {
     LOAD_STAGING("stage", false), LOAD_TARGET("load", true), MERGE_TARGET("merge", true);
@@ -593,11 +598,7 @@ public class BigQueryEventConsumer implements EventConsumer {
       .setTableName(normalizedTableName)
       .build();
     long sequenceNumber = sequencedEvent.getSequenceNumber();
-    Failsafe.with(new RetryPolicy<>()
-                    .withMaxAttempts(25)
-                    .withMaxDuration(Duration.of(2, ChronoUnit.MINUTES))
-                    .withBackoff(1, 30, ChronoUnit.SECONDS)
-                    .withJitter(0.1))
+    Failsafe.with(gcsWriterRetryPolicy)
             .run(() -> gcsWriter.write(new Sequenced<>(normalizedDMLEvent, sequenceNumber)));
 
     TableId tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);

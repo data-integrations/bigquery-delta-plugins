@@ -46,7 +46,9 @@ import io.cdap.delta.api.Offset;
 import io.cdap.delta.api.Sequenced;
 import org.apache.avro.file.DataFileWriter;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.ExpectedException;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mock;
@@ -117,6 +119,8 @@ public class BigQueryConsumerTest {
   private DataFileWriter dataFileWriter;
   @Mock
   private MultiGCSWriter gcsWriter;
+  @Rule
+  private ExpectedException exceptionRule = ExpectedException.none();
 
   @Before
   public void setup() throws Exception {
@@ -128,7 +132,7 @@ public class BigQueryConsumerTest {
     Mockito.when(dataFileWriter.create(Mockito.any(org.apache.avro.Schema.class), Mockito.any(OutputStream.class)))
       .thenReturn(dataFileWriter);
     PowerMockito.whenNew(DataFileWriter.class).withAnyArguments().thenReturn(dataFileWriter);
-    PowerMockito.whenNew(MultiGCSWriter.class).withAnyArguments().thenReturn(gcsWriter);
+    //PowerMockito.whenNew(MultiGCSWriter.class).withAnyArguments().thenReturn(gcsWriter);
 
     //Random execution time for BigQuery job
     Mockito.when(job.waitFor())
@@ -310,7 +314,7 @@ public class BigQueryConsumerTest {
 
   @Test
   public void testGcsWriteInMemoryFailureRetries() throws Exception {
-    Mockito.doThrow(new IllegalStateException()).when(gcsWriter).write(Mockito.any());
+    Mockito.doThrow(new IllegalStateException()).when(dataFileWriter).append(Mockito.any());
 
     StructuredRecord record = StructuredRecord.builder(schema)
       .set(PRIMARY_KEY_COL, random.nextInt())
@@ -331,10 +335,12 @@ public class BigQueryConsumerTest {
                                                                     DATASET, false);
 
     try {
+      exceptionRule.expect(IllegalStateException.class);
       eventConsumer.applyDML(new Sequenced<>(insert1Event, 0));
-    } catch (IllegalStateException e) {
+    } finally {
       //Verify that retry happens
-      Mockito.verify(gcsWriter, Mockito.atLeast(2)).write(Mockito.any(Sequenced.class));
+      Mockito.verify(dataFileWriter, Mockito.atLeast(2)).append(Mockito.any());
+      eventConsumer.stop();
     }
   }
 
