@@ -45,12 +45,15 @@ import io.cdap.delta.api.DDLEvent;
 import io.cdap.delta.api.DDLOperation;
 import io.cdap.delta.api.DMLEvent;
 import io.cdap.delta.api.DMLOperation;
+import io.cdap.delta.api.DeltaFailureException;
 import io.cdap.delta.api.DeltaTargetContext;
 import io.cdap.delta.api.Offset;
 import io.cdap.delta.api.Sequenced;
 import org.apache.avro.file.DataFileWriter;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.ExpectedException;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mock;
@@ -67,7 +70,6 @@ import java.io.OutputStream;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.Optional;
 import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
@@ -122,6 +124,9 @@ public class BigQueryConsumerTest {
   private Job job;
   @Mock
   private DataFileWriter dataFileWriter;
+
+  @Rule
+  private ExpectedException exceptionRule = ExpectedException.none();
 
   @Before
   public void setup() throws Exception {
@@ -606,14 +611,37 @@ public class BigQueryConsumerTest {
     Mockito.verify(bigQuery, Mockito.times(1)).create(datasetIs(DATASET));
     Mockito.verify(bigQuery, Mockito.atLeastOnce()).getTable(Mockito.any(TableId.class));
     //Fetch sequence num (x2 for 2 tables), no load jobs as all events are filtered out
-    Mockito.verify(bigQuery,  Mockito.times(2)).create(Mockito.any(JobInfo.class));
+    Mockito.verify(bigQuery, Mockito.times(2)).create(Mockito.any(JobInfo.class));
     eventConsumer.stop();
   }
 
+  @Test
+  public void testPermanentFailureIsNotRetriedInProcessDDL() throws Exception {
+    int numTables = 1;
+    List<String> tables = getTables(numTables);
+
+    Mockito.when(bigQuery.getTable(Mockito.any())).thenReturn(null);
+    BigQueryError error = new BigQueryError("invalid", "loc", "error");
+    Mockito.when(bigQuery.create(Mockito.any(TableInfo.class)))
+      .thenThrow(new BigQueryException(400, "error", error));
+
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
+                                                                    bigQuery, bucket, "project",
+                                                                    LOAD_INTERVAL_ONE_SECOND, "_staging",
+                                                                    false, null, 2L,
+                                                                    DATASET, false);
+    eventConsumer.start();
+    try {
+      exceptionRule.expect(DeltaFailureException.class);
+      generateDDL(eventConsumer, tables);
+    } finally {
+      Mockito.verify(bigQuery, Mockito.times(1)).create(Mockito.any(TableInfo.class));
+      eventConsumer.stop();
+    }
+  }
+
   private JobId isForAttempt(int i) {
-    return Mockito.argThat(jobId -> {
-                             return jobId.getJob().endsWith("_" + i);
-                           });
+    return Mockito.argThat(jobId -> jobId.getJob().endsWith("_" + i));
   }
 
   private void waitForFlushWithBuffer(int loadIntervalSeconds, int flushCount) throws InterruptedException {

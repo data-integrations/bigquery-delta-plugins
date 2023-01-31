@@ -60,6 +60,7 @@ import net.jodah.failsafe.Failsafe;
 import net.jodah.failsafe.FailsafeException;
 import net.jodah.failsafe.RetryPolicy;
 import net.jodah.failsafe.TimeoutExceededException;
+import net.jodah.failsafe.event.ExecutionAttemptedEvent;
 import net.jodah.failsafe.function.ContextualRunnable;
 import org.apache.twill.common.Threads;
 import org.slf4j.Logger;
@@ -69,11 +70,14 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -194,26 +198,6 @@ public class BigQueryEventConsumer implements EventConsumer {
   private Exception flushException;
   private final AtomicBoolean shouldStop;
 
-  private enum JobType {
-    LOAD_STAGING("stage", false), LOAD_TARGET("load", true), MERGE_TARGET("merge", true);
-
-    private final String id;
-    private final boolean forTargetTable;
-
-    JobType(String id, boolean forTargetTable) {
-      this.id = id;
-      this.forTargetTable = forTargetTable;
-    }
-
-    public String getId() {
-      return id;
-    }
-
-    public boolean isForTargetTable() {
-      return forTargetTable;
-    }
-  }
-
   // have to keep all the records in memory in case there is a failure writing to GCS
   // cannot write to a temporary file on local disk either in case there is a failure writing to disk
   // Without keeping the entire batch in memory, there would be no way to recover the records that failed to write
@@ -316,15 +300,27 @@ public class BigQueryEventConsumer implements EventConsumer {
     String normalizedStagingTableName = normalizedTableName == null ? null :
       BigQueryUtils.normalizeTableName(stagingTablePrefix + normalizedTableName);
 
-    runWithRetries(ctx -> handleDDL(event, normalizedDatabaseName, normalizedTableName, normalizedStagingTableName),
-                   baseRetryDelay,
-                   normalizedDatabaseName,
-                   event.getOperation().getSchemaName(),
-                   normalizedTableName,
-                   String.format("Failed to apply '%s' DDL event", event.getOperation()),
-                   String.format("Exhausted retries trying to apply '%s' DDL event", event.getOperation())
-    );
+    RetryPolicy<Object> retryPolicy = createBaseRetryPolicy(baseRetryDelay)
+      .abortOn(ex -> ex instanceof DeltaFailureException)
+      .onFailedAttempt(failureContext -> {
+        handleBigQueryFailure(normalizedDatabaseName, event.getOperation().getSchemaName(), normalizedTableName,
+                              String.format("Failed to apply '%s' DDL event",  GSON.toJson(event)), failureContext);
+      });
 
+    runWithRetryPolicy(
+      ctx -> {
+        try {
+          handleDDL(event, normalizedDatabaseName, normalizedTableName, normalizedStagingTableName);
+        } catch (BigQueryException ex) {
+          //Unsupported DDL Operation
+          if (isInvalidOperationError(ex)) {
+            throw new DeltaFailureException("Non recoverable error in applying DDL event, aborting", ex);
+          }
+        }
+      },
+      String.format("Exhausted retries trying to apply '%s' DDL event",
+                    event.getOperation()), retryPolicy
+    );
 
     latestOffset = event.getOffset();
 
@@ -1382,31 +1378,23 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   private void runWithRetries(ContextualRunnable runnable, long retryDelay, String dataset, String schema, String table,
-    String onFailedAttemptMessage, String retriesExhaustedMessage) throws DeltaFailureException, InterruptedException {
-    RetryPolicy<Object> retryPolicy = createBaseRetryPolicy(retryDelay)
-      .onFailedAttempt(failureContext -> {
-        Throwable t = failureContext.getLastFailure();
-        LOG.error(onFailedAttemptMessage, t);
-        //Logging error list
-        if (t instanceof BigQueryException) {
-          List<BigQueryError> errors = ((BigQueryException) t).getErrors();
-          if (errors != null) {
-            errors.forEach(err -> LOG.error(err.getMessage()));
-          }
-        }
-        // its ok to set table state every retry, because this is a no-op if there is no change to the state.
-        try {
-          context.setTableError(dataset, table, new ReplicationError(t));
-        } catch (Exception e) {
-          // setting table state is not a fatal error, log a warning and continue on
-          LOG.warn(String.format("Unable to set error state for table %s.%s.%s " +
-                                   "Replication state for the table may be incorrect.",
-                   dataset, schema, table), e);
-        }
-      });
+                              String onFailedAttemptMessage, String retriesExhaustedMessage)
+    throws DeltaFailureException, InterruptedException {
 
+    runWithRetryPolicy(runnable, retriesExhaustedMessage, createBaseRetryPolicy(retryDelay)
+      //Do not retry in case of invalid requests errors, but let the retrey happen from Worker
+      //which can potentially mitigate the issue
+      .abortOn(this::isInvalidOperationError)
+      .onFailedAttempt(failureContext -> {
+        handleBigQueryFailure(dataset, schema, table, onFailedAttemptMessage, failureContext);
+      }));
+  }
+
+  private void runWithRetryPolicy(ContextualRunnable runnable, String retriesExhaustedMessage,
+                                  RetryPolicy<Object>... retryPolicies)
+    throws DeltaFailureException, InterruptedException {
     try {
-      Failsafe.with(retryPolicy).run(runnable);
+      Failsafe.with(retryPolicies).run(runnable);
     } catch (TimeoutExceededException e) {
       // if the retry timeout was reached, throw a DeltaFailureException to fail the pipeline immediately
       DeltaFailureException exc = new DeltaFailureException(retriesExhaustedMessage, e);
@@ -1420,6 +1408,31 @@ public class BigQueryEventConsumer implements EventConsumer {
         throw (DeltaFailureException) e.getCause();
       }
       throw e;
+    }
+  }
+
+  private void handleBigQueryFailure(String dataset, String schema, String table, String onFailedAttemptMessage,
+                                     ExecutionAttemptedEvent<Object> failureContext) {
+    Throwable t = failureContext.getLastFailure();
+    LOG.error(onFailedAttemptMessage, t);
+    if (t.getCause() instanceof BigQueryException) {
+      t = t.getCause();
+    }
+    //Logging error list
+    if (t instanceof BigQueryException) {
+      List<BigQueryError> errors = ((BigQueryException) t).getErrors();
+      if (errors != null) {
+        errors.forEach(err -> LOG.error(err.getMessage()));
+      }
+    }
+    // its ok to set table state every retry, because this is a no-op if there is no change to the state.
+    try {
+      context.setTableError(dataset, table, new ReplicationError(t));
+    } catch (Exception e) {
+      // setting table state is not a fatal error, log a warning and continue on
+      LOG.warn(String.format("Unable to set error state for table %s.%s.%s " +
+                               "Replication state for the table may be incorrect.",
+                             dataset, schema, table), e);
     }
   }
 
@@ -1603,6 +1616,10 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   private <T> RetryPolicy<T> createBaseRetryPolicy(long baseDelay) {
+    return createBaseRetryPolicy(baseDelay, Integer.MAX_VALUE);
+  }
+
+  private <T> RetryPolicy<T> createBaseRetryPolicy(long baseDelay, int maxAttempts) {
     RetryPolicy<T> retryPolicy = new RetryPolicy<>();
     retryPolicy.abortOn(f -> shouldStop.get());
     if (context.getMaxRetrySeconds() < 1) {
@@ -1610,7 +1627,11 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
 
     long maxDelay = Math.max(baseDelay + 1, loadIntervalSeconds);
-    return retryPolicy.withMaxAttempts(Integer.MAX_VALUE)
+    return retryPolicy.withMaxAttempts(maxAttempts)
       .withBackoff(baseDelay, maxDelay, ChronoUnit.SECONDS);
+  }
+
+  private boolean isInvalidOperationError(Throwable ex) {
+    return ex instanceof BigQueryException && BigQueryUtils.isInvalidOperationError((BigQueryException) ex);
   }
 }
