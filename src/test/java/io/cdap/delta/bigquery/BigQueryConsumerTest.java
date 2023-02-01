@@ -124,7 +124,6 @@ public class BigQueryConsumerTest {
   private Job job;
   @Mock
   private DataFileWriter dataFileWriter;
-
   @Rule
   private ExpectedException exceptionRule = ExpectedException.none();
 
@@ -138,6 +137,7 @@ public class BigQueryConsumerTest {
     Mockito.when(dataFileWriter.create(Mockito.any(org.apache.avro.Schema.class), Mockito.any(OutputStream.class)))
       .thenReturn(dataFileWriter);
     PowerMockito.whenNew(DataFileWriter.class).withAnyArguments().thenReturn(dataFileWriter);
+
 
     //Random execution time for BigQuery job
     Mockito.when(job.waitFor())
@@ -316,6 +316,39 @@ public class BigQueryConsumerTest {
 
     eventConsumer.stop();
   }
+
+  @Test
+  public void testGcsWriteInMemoryFailureRetries() throws Exception {
+    Mockito.doThrow(new IllegalStateException()).when(dataFileWriter).append(Mockito.any());
+
+    StructuredRecord record = StructuredRecord.builder(schema)
+      .set(PRIMARY_KEY_COL, random.nextInt())
+      .set(NAME_COL, "alice")
+      .build();
+
+    DMLEvent insert1Event = DMLEvent.builder()
+      .setOperationType(DMLOperation.Type.INSERT)
+      .setDatabaseName(DATABASE)
+      .setTableName(TABLE)
+      .setRow(record)
+      .build();
+
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
+                                                                    bigQuery, bucket, "project",
+                                                                    LOAD_INTERVAL_ONE_SECOND, "_staging",
+                                                                    false, null, 2L,
+                                                                    DATASET, false);
+
+    try {
+      exceptionRule.expect(IllegalStateException.class);
+      eventConsumer.applyDML(new Sequenced<>(insert1Event, 1));
+    } finally {
+      //Verify that retry happens
+      Mockito.verify(dataFileWriter, Mockito.atLeast(2)).append(Mockito.any());
+      eventConsumer.stop();
+    }
+  }
+
 
   /**
    *  Test checks retry handling in case of create and get status failure for load job

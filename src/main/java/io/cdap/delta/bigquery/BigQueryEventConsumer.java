@@ -197,6 +197,11 @@ public class BigQueryEventConsumer implements EventConsumer {
   private long latestSequenceNum;
   private Exception flushException;
   private final AtomicBoolean shouldStop;
+  private RetryPolicy<Object> gcsWriterRetryPolicy = new RetryPolicy<>()
+                                                .withMaxAttempts(25)
+                                                .withMaxDuration(Duration.of(2, ChronoUnit.MINUTES))
+                                                .withBackoff(1, 30, ChronoUnit.SECONDS)
+                                                .withJitter(0.1);
 
   // have to keep all the records in memory in case there is a failure writing to GCS
   // cannot write to a temporary file on local disk either in case there is a failure writing to disk
@@ -608,7 +613,8 @@ public class BigQueryEventConsumer implements EventConsumer {
     if (sequenceNumber > latestMergedSequencedNum) {
       latestSeenSequence.put(tableId, sequenceNumber);
       //Only write events which have not already been applied
-      gcsWriter.write(new Sequenced<>(normalizedDMLEvent, sequenceNumber));
+      Failsafe.with(gcsWriterRetryPolicy)
+              .run(() -> gcsWriter.write(new Sequenced<>(normalizedDMLEvent, sequenceNumber)));
     }
 
     latestOffset = event.getOffset();
