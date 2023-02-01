@@ -20,11 +20,15 @@ import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryError;
 import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.DatasetInfo;
+import com.google.cloud.bigquery.Field;
+import com.google.cloud.bigquery.FieldValue;
+import com.google.cloud.bigquery.FieldValueList;
 import com.google.cloud.bigquery.Job;
 import com.google.cloud.bigquery.JobConfiguration;
 import com.google.cloud.bigquery.JobId;
 import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.JobStatus;
+import com.google.cloud.bigquery.StandardSQLTypeName;
 import com.google.cloud.bigquery.Table;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
@@ -41,6 +45,7 @@ import io.cdap.delta.api.DDLEvent;
 import io.cdap.delta.api.DDLOperation;
 import io.cdap.delta.api.DMLEvent;
 import io.cdap.delta.api.DMLOperation;
+import io.cdap.delta.api.DeltaFailureException;
 import io.cdap.delta.api.DeltaTargetContext;
 import io.cdap.delta.api.Offset;
 import io.cdap.delta.api.Sequenced;
@@ -98,6 +103,8 @@ public class BigQueryConsumerTest {
                                                        Schema.Field.of(NAME_COL, Schema.of(Schema.Type.STRING)));
   private static final BlobId blobId = BlobId.of(BUCKET, TABLE, GENERATION);
   private static final int WAIT_BUFFER_SEC = 2;
+  private static final boolean CDC = false;
+  private static final boolean SNAPSHOT = true;
 
   @Mock
   private DeltaTargetContext deltaTargetContext;
@@ -163,7 +170,7 @@ public class BigQueryConsumerTest {
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
-    generateInsertCDCEvents(eventConsumer, tables, numInsertEvents);
+    generateInsertEvents(eventConsumer, tables, numInsertEvents, CDC);
 
     //Wait for flush with some buffer
     waitForFlushWithBuffer(LOAD_INTERVAL_SECONDS, 1);
@@ -210,7 +217,7 @@ public class BigQueryConsumerTest {
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
-    generateInsertCDCEvents(eventConsumer, tables, numInsertEvents);
+    generateInsertEvents(eventConsumer, tables, numInsertEvents, CDC);
 
     //Wait for flush with some buffer
     waitForFlushWithBuffer(LOAD_INTERVAL_SECONDS, 1);
@@ -240,27 +247,27 @@ public class BigQueryConsumerTest {
 
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
                                                                     bigQuery, bucket, "project",
-                                                                    LOAD_INTERVAL_SECONDS, "_staging",
+                                                                    LOAD_INTERVAL_ONE_SECOND, "_staging",
                                                                     false, null, 2L,
                                                                     EMPTY_DATASET_NAME, false);
     eventConsumer.start();
 
-    generateInsertCDCEvents(eventConsumer, tables, numInsertEvents);
+    generateInsertEvents(eventConsumer, tables, numInsertEvents, CDC);
 
     //Wait for flush with some buffer
-    Thread.sleep(TimeUnit.SECONDS.toMillis(LOAD_INTERVAL_SECONDS + 2));
+    waitForFlushWithBuffer(LOAD_INTERVAL_ONE_SECOND, 1);
 
-    generateInsertCDCEvents(eventConsumer, tables, numInsertEvents);
+    generateInsertEvents(eventConsumer, tables, numInsertEvents, CDC, 10);
 
     //Wait for flush with some buffer
-    Thread.sleep(TimeUnit.SECONDS.toMillis(LOAD_INTERVAL_SECONDS + 2));
+    waitForFlushWithBuffer(LOAD_INTERVAL_ONE_SECOND, 1);
 
     //Verify primary keys were fetched only once from state store and then cached
     Mockito.verify(deltaTargetContext, Mockito.times(1)).getState(Mockito.any());
     Mockito.verify(dataFileWriter, Mockito.times(2)).close();
     //Mocks are setup such that the table already exists (for simplicity)
-    //Load and merge jobs
-    Mockito.verify(bigQuery, Mockito.atLeast(2)).create(Mockito.any(JobInfo.class));
+    //max sequence num, load and merge jobs
+    Mockito.verify(bigQuery, Mockito.atLeast(3)).create(Mockito.any(JobInfo.class));
     //Delete staging table
     Mockito.verify(bigQuery, Mockito.times(2)).delete(Mockito.any(TableId.class));
 
@@ -287,7 +294,7 @@ public class BigQueryConsumerTest {
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
-    generateInsertCDCEvents(eventConsumer, tables, numInsertEvents);
+    generateInsertEvents(eventConsumer, tables, numInsertEvents, CDC);
 
     //Wait for flush with some buffer
     waitForFlushWithBuffer(LOAD_INTERVAL_ONE_SECOND, 10);
@@ -334,7 +341,7 @@ public class BigQueryConsumerTest {
 
     try {
       exceptionRule.expect(IllegalStateException.class);
-      eventConsumer.applyDML(new Sequenced<>(insert1Event, 0));
+      eventConsumer.applyDML(new Sequenced<>(insert1Event, 1));
     } finally {
       //Verify that retry happens
       Mockito.verify(dataFileWriter, Mockito.atLeast(2)).append(Mockito.any());
@@ -385,7 +392,7 @@ public class BigQueryConsumerTest {
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
-    generateInsertCDCEvents(eventConsumer, tables, numInsertEvents);
+    generateInsertEvents(eventConsumer, tables, numInsertEvents, CDC);
 
     //Wait for flush with some buffer
     waitForFlushWithBuffer(LOAD_INTERVAL_ONE_SECOND, 10);
@@ -447,7 +454,7 @@ public class BigQueryConsumerTest {
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
-    generateInsertCDCEvents(eventConsumer, tables, numInsertEvents);
+    generateInsertEvents(eventConsumer, tables, numInsertEvents, CDC);
 
     //Wait for flush with some buffer
     waitForFlushWithBuffer(LOAD_INTERVAL_ONE_SECOND, 10);
@@ -509,7 +516,7 @@ public class BigQueryConsumerTest {
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
-    generateInsertCDCEvents(eventConsumer, tables, numInsertEvents);
+    generateInsertEvents(eventConsumer, tables, numInsertEvents, CDC);
 
     //Wait for flush with some buffer
     waitForFlushWithBuffer(LOAD_INTERVAL_ONE_SECOND, 10);
@@ -571,7 +578,7 @@ public class BigQueryConsumerTest {
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
-    generateInsertCDCEvents(eventConsumer, tables, numInsertEvents);
+    generateInsertEvents(eventConsumer, tables, numInsertEvents, CDC);
 
     //Wait for flush with some buffer
     waitForFlushWithBuffer(LOAD_INTERVAL_ONE_SECOND, 4);
@@ -591,10 +598,83 @@ public class BigQueryConsumerTest {
     eventConsumer.stop();
   }
 
+  /**
+   * Validates duplicates events are not inserted to target table in following scenario
+   *  1. Snapshot events with seq no 1-100 are inserted in target table
+   *  2. Before commiting offset, there is a worker crash
+   *  3. On worker restart, source plugin resumes from last saved offset (it  supports resuming snapshot)
+   *  4. Events with seq no 1-100 are re-generated by source plugin
+   *  5. Target plugin ensures that events with sequence number lower than max sequence number
+   *     in the target table are dropped
+   * @throws Exception
+   */
+  @Test
+  public void testDataConsistencyInSnapshotEventReplay() throws Exception {
+    int numTables = 2;
+    int numInsertEvents = 5;
+
+    List<String> tables = getTables(numTables);
+
+    //max sequence num in target table is 10
+    TableResult tableResult = Mockito.mock(TableResult.class);
+    FieldValue maxSeq = FieldValue.of(FieldValue.Attribute.PRIMITIVE, "10");
+    FieldValueList fieldValueList = FieldValueList
+      .of(Arrays.asList(maxSeq), Field.of("max", StandardSQLTypeName.NUMERIC));
+    Mockito.when(tableResult.iterateAll()).thenReturn(Arrays.asList(fieldValueList));
+    Mockito.when(job.getQueryResults()).thenReturn(tableResult);
+
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
+                                                                    bigQuery, bucket, "project",
+                                                                    LOAD_INTERVAL_ONE_SECOND, "_staging",
+                                                                    false, null, 2L,
+                                                                    DATASET, false);
+    eventConsumer.start();
+
+    generateDDL(eventConsumer, tables);
+    //Generates event with seq num <= 10 (2 tables 5 events each starting from 1)
+    generateInsertEvents(eventConsumer, tables, numInsertEvents, SNAPSHOT);
+
+    //Wait for flush with some buffer
+    waitForFlushWithBuffer(LOAD_INTERVAL_ONE_SECOND, 1);
+
+    //Verify that replay events were not written
+    Mockito.verify(dataFileWriter, Mockito.never()).append(Mockito.any());
+    Mockito.verify(dataFileWriter, Mockito.never()).close();
+
+    Mockito.verify(bigQuery, Mockito.times(1)).create(datasetIs(DATASET));
+    Mockito.verify(bigQuery, Mockito.atLeastOnce()).getTable(Mockito.any(TableId.class));
+    //Fetch sequence num (x2 for 2 tables), no load jobs as all events are filtered out
+    Mockito.verify(bigQuery, Mockito.times(2)).create(Mockito.any(JobInfo.class));
+    eventConsumer.stop();
+  }
+
+  @Test
+  public void testPermanentFailureIsNotRetriedInProcessDDL() throws Exception {
+    int numTables = 1;
+    List<String> tables = getTables(numTables);
+
+    Mockito.when(bigQuery.getTable(Mockito.any())).thenReturn(null);
+    BigQueryError error = new BigQueryError("invalid", "loc", "error");
+    Mockito.when(bigQuery.create(Mockito.any(TableInfo.class)))
+      .thenThrow(new BigQueryException(400, "error", error));
+
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
+                                                                    bigQuery, bucket, "project",
+                                                                    LOAD_INTERVAL_ONE_SECOND, "_staging",
+                                                                    false, null, 2L,
+                                                                    DATASET, false);
+    eventConsumer.start();
+    try {
+      exceptionRule.expect(DeltaFailureException.class);
+      generateDDL(eventConsumer, tables);
+    } finally {
+      Mockito.verify(bigQuery, Mockito.times(1)).create(Mockito.any(TableInfo.class));
+      eventConsumer.stop();
+    }
+  }
+
   private JobId isForAttempt(int i) {
-    return Mockito.argThat(jobId -> {
-                             return jobId.getJob().endsWith("_" + i);
-                           });
+    return Mockito.argThat(jobId -> jobId.getJob().endsWith("_" + i));
   }
 
   private void waitForFlushWithBuffer(int loadIntervalSeconds, int flushCount) throws InterruptedException {
@@ -641,9 +721,13 @@ public class BigQueryConsumerTest {
     }
   }
 
-  private void generateInsertCDCEvents(BigQueryEventConsumer eventConsumer, List<String> tables,
-                                       int numEvents) throws Exception {
-    final AtomicInteger seq = new AtomicInteger(0);
+  private void generateInsertEvents(BigQueryEventConsumer eventConsumer, List<String> tables,
+                                    int numEvents, boolean isSnapshot) throws Exception {
+    generateInsertEvents(eventConsumer, tables, numEvents, isSnapshot, 0);
+  }
+  private void generateInsertEvents(BigQueryEventConsumer eventConsumer, List<String> tables,
+                                    int numEvents, boolean isSnapshot, Integer seqNum) throws Exception {
+    final AtomicInteger seq = new AtomicInteger(seqNum);
 
     for (String tableName : tables) {
       for (int num = 0; num < numEvents; num++) {
@@ -655,7 +739,7 @@ public class BigQueryConsumerTest {
         DMLEvent insert1Event = DMLEvent.builder()
           .setOperationType(DMLOperation.Type.INSERT)
           .setIngestTimestamp(System.currentTimeMillis())
-          .setSnapshot(false)
+          .setSnapshot(isSnapshot)
           .setDatabaseName(DATABASE)
           .setTableName(tableName)
           .setRow(record)
