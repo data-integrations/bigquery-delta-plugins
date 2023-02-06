@@ -80,7 +80,7 @@ public final class BigQueryUtils {
   static long getMaximumExistingSequenceNumber(Set<SourceTable> allTables, String project,
                                                @Nullable String datasetName, BigQuery bigQuery,
                                                EncryptionConfiguration encryptionConfiguration,
-                                               int maxTablesPerQuery) {
+                                               int maxTablesPerQuery) throws InterruptedException {
 
     Set<SourceTable> allRemainingTables = allTables;
     long maxExisting = 0;
@@ -105,8 +105,8 @@ public final class BigQueryUtils {
    * missing '_sequence_num' column in any of the tables, exception will be thrown.
    */
   static long getMaximumExistingSequenceNumberPerBatch(Set<SourceTable> allTables, String project,
-                                                       @Nullable String datasetName, BigQuery bigQuery,
-                                                       EncryptionConfiguration encryptionConfiguration) {
+                        @Nullable String datasetName, BigQuery bigQuery,
+                        EncryptionConfiguration encryptionConfiguration) throws InterruptedException {
     SourceTable table0 = allTables.stream().findFirst().get();
     Set<TableId> existingTableIDs = new HashSet<>();
     String dataset = getNormalizedDatasetName(datasetName, table0.getDatabase());
@@ -131,18 +131,9 @@ public final class BigQueryUtils {
     builder.append(String.join(" UNION ALL ", maxSequenceNumQueryPerTable));
     builder.append(");");
 
-    long maxSequenceNumber;
-    try {
-      maxSequenceNumber = maxSequenceNumQueryPerTable.size() == 0 ? 0 : executeAggregateQuery(bigQuery,
-                                                                                              builder.toString(),
-                                                                                              encryptionConfiguration);
-    } catch (InterruptedException e) {
-      throw new RuntimeException("Failed to compute the maximum sequence number among all the target tables " +
-              "selected for replication. Please make sure that if target tables exists, " +
-              "they should have '_sequence_num' column in them.", e);
-    } catch (Exception e) {
-      throw e;
-    }
+    long maxSequenceNumber = maxSequenceNumQueryPerTable.size() == 0 ? 0 : executeAggregateQuery(bigQuery,
+            builder.toString(),
+            encryptionConfiguration);;
     return maxSequenceNumber;
   }
 

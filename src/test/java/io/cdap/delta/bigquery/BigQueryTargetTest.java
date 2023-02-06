@@ -81,6 +81,7 @@ public class BigQueryTargetTest {
   private  static final String BILLING_TIER_LIMIT_EXCEEDED_REASON = "billingTierLimitExceeded";
   private static final Integer NOT_IMPLEMENTED_CODE = 501;
   private static final int BQ_JOB_TIME_BOUND = 2;
+  private static final int RETRY_COUNT = 2;
   private final DeltaPipelineId pipelineId = new DeltaPipelineId("ns", "app", 1L);
   @Rule
   private final ExpectedException exceptionRule = ExpectedException.none();
@@ -103,15 +104,16 @@ public class BigQueryTargetTest {
   @Mock
   private Storage storage;
   @Mock
-  StorageOptions storageOptions;
+  private StorageOptions storageOptions;
   @Mock
-  BigQueryOptions bigqueryOptions;
+  private BigQueryOptions bigqueryOptions;
   @Mock
   private Credentials credentials;
   @Mock
   private SourceTable sourceTable;
   @Mock
   private Table table;
+  private BigQueryTarget bqTarget;
 
   @Before
   public void setUp() throws Exception {
@@ -155,6 +157,8 @@ public class BigQueryTargetTest {
     Mockito.when(bigQuery.create(Mockito.any(JobInfo.class))).thenReturn(job);
     Mockito.when(bigQuery.listTables(Mockito.anyString())).thenReturn(Mockito.mock(Page.class));
     Mockito.when(bigQuery.listTables(Mockito.anyString()).iterateAll()).thenReturn(Collections.singletonList(table));
+
+    bqTarget = new BigQueryTarget(conf, RETRY_COUNT);
   }
 
   @Test
@@ -180,7 +184,7 @@ public class BigQueryTargetTest {
             new BigQueryError(BILLING_TIER_LIMIT_EXCEEDED_REASON, null, null)));
     exceptions.add(new BigQueryException(RATE_LIMIT_EXCEEDED_CODES.stream().findAny().get(), null,
             new BigQueryError(RATE_LIMIT_EXCEEDED_REASON, null, null)));
-    BigQueryTarget bqTarget = new BigQueryTarget(conf);
+
     for (Throwable exception: exceptions) {
       Mockito.when(job.getQueryResults()).thenThrow(exception);
       try {
@@ -216,7 +220,7 @@ public class BigQueryTargetTest {
     List<Throwable> exceptions = new ArrayList<>();
     exceptions.add(new BigQueryException(NOT_IMPLEMENTED_CODE, null));
     exceptions.add(new RuntimeException());
-    BigQueryTarget bqTarget = new BigQueryTarget(conf);
+
     for (Throwable exception: exceptions) {
       Mockito.when(job.getQueryResults()).thenThrow(exception);
       try {
@@ -241,7 +245,6 @@ public class BigQueryTargetTest {
     Throwable exception = new StorageException(403, null);
     Mockito.when(storage.create(Mockito.any(BucketInfo.class))).thenThrow(exception);
 
-    BigQueryTarget bqTarget = new BigQueryTarget(conf);
     try {
       //IO Exception thrown is wrapped by Failsafe.Failsafe wraps checked exceptions.
       exceptionRule.expect(FailsafeException.class);
@@ -258,7 +261,6 @@ public class BigQueryTargetTest {
     Throwable exception = new StorageException(500, null);
     Mockito.when(storage.get(Mockito.anyString())).thenThrow(exception);
 
-    BigQueryTarget bqTarget = new BigQueryTarget(conf);
     try {
       exceptionRule.expect(exception.getClass());
       bqTarget.createConsumer(deltaTargetContext);
@@ -273,7 +275,6 @@ public class BigQueryTargetTest {
     Throwable exception = new StorageException(501, null);
     Mockito.when(storage.get(Mockito.anyString())).thenThrow(exception);
 
-    BigQueryTarget bqTarget = new BigQueryTarget(conf);
     try {
       exceptionRule.expect(exception.getClass());
       bqTarget.createConsumer(deltaTargetContext);

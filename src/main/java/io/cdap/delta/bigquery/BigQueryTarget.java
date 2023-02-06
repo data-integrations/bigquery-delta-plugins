@@ -77,11 +77,18 @@ public class BigQueryTarget implements DeltaTarget {
   private static final Set<Integer> RATE_LIMIT_EXCEEDED_CODES = new HashSet<>(Arrays.asList(400, 403));
   private  static final int BILLING_TIER_LIMIT_EXCEEDED_CODE = 400;
   private  static final String BILLING_TIER_LIMIT_EXCEEDED_REASON = "billingTierLimitExceeded";
+  private  static final int RETRY_COUNT = 25;
+  private final int retryCount;
   private final Conf conf;
 
   @SuppressWarnings("unused")
   public BigQueryTarget(Conf conf) {
+    this(conf, RETRY_COUNT);
+  }
+  @SuppressWarnings("unused")
+  public BigQueryTarget(Conf conf, int retryCount) {
     this.conf = conf;
+    this.retryCount = retryCount;
   }
 
   @Override
@@ -106,16 +113,19 @@ public class BigQueryTarget implements DeltaTarget {
       .getService();
 
     RetryPolicy<Object> retryPolicy = createBaseRetryPolicy()
-            .handleIf(throwable -> {
-              if (throwable instanceof BigQueryException) {
-                BigQueryException t = (BigQueryException) throwable;
+            .handleIf(ex -> {
+              if (ex.getCause() instanceof IOException) {
+                return true;
+              }
+              if (ex instanceof BigQueryException) {
+                BigQueryException t = (BigQueryException) ex;
                 int code = t.getCode();
                 String reason = t.getError() != null ? t.getError().getReason() : null;
                 boolean isRateLimitExceeded =  RATE_LIMIT_EXCEEDED_CODES.contains(code)
                         && RATE_LIMIT_EXCEEDED_REASON.equals(reason);
                 boolean isBillingTierLimitExceeded = code == BILLING_TIER_LIMIT_EXCEEDED_CODE
                         && BILLING_TIER_LIMIT_EXCEEDED_REASON.equals(reason);
-                return (t.isRetryable() || isRateLimitExceeded || isBillingTierLimitExceeded);
+                return t.isRetryable() || isRateLimitExceeded || isBillingTierLimitExceeded;
               }
               return false;
             });
@@ -179,7 +189,7 @@ public class BigQueryTarget implements DeltaTarget {
           // bucket is created by another worker instance after this worker instance
           // determined that the bucket does not exists. Ignore error if bucket already exists.
           if (e.getCode() != CONFLICT) {
-            throw new IOException(
+            throw new RuntimeException(
                     String.format("Unable to create staging bucket '%s' in project '%s'. " +
                             "Please make sure the service account has permission to create buckets, " +
                             "or create the bucket before starting the program.", stagingBucketName, project), e);
@@ -220,7 +230,7 @@ public class BigQueryTarget implements DeltaTarget {
 
   private <T> RetryPolicy<T> createBaseRetryPolicy() {
     RetryPolicy<T> retryPolicy = new RetryPolicy<>();
-    return retryPolicy.withMaxAttempts(2)
+    return retryPolicy.withMaxAttempts(retryCount)
             .withMaxDuration(Duration.of(2, ChronoUnit.MINUTES))
             .withBackoff(1, 30, ChronoUnit.SECONDS)
             .withJitter(0.1);
