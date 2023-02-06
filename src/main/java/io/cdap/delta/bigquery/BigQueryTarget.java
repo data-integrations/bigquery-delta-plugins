@@ -105,13 +105,33 @@ public class BigQueryTarget implements DeltaTarget {
       .build()
       .getService();
 
-    long maximumExistingSequenceNumber = Failsafe.with(createRetryPolicyForBq()).get(() ->
-            BigQueryUtils.getMaximumExistingSequenceNumber(context.getAllTables(), project, conf.getDatasetName(),
-                    bigQuery, encryptionConfig, MAX_TABLES_PER_QUERY));
+    RetryPolicy<Object> retryPolicy = createBaseRetryPolicy()
+            .handleIf(throwable -> {
+              if (throwable instanceof BigQueryException) {
+                BigQueryException t = (BigQueryException) throwable;
+                int code = t.getCode();
+                String reason = t.getError() != null ? t.getError().getReason() : null;
+                boolean isRateLimitExceeded =  RATE_LIMIT_EXCEEDED_CODES.contains(code)
+                        && RATE_LIMIT_EXCEEDED_REASON.equals(reason);
+                boolean isBillingTierLimitExceeded = code == BILLING_TIER_LIMIT_EXCEEDED_CODE
+                        && BILLING_TIER_LIMIT_EXCEEDED_REASON.equals(reason);
+                return (t.isRetryable() || isRateLimitExceeded || isBillingTierLimitExceeded);
+              }
+              return false;
+            });
+    try {
+      long maximumExistingSequenceNumber = Failsafe.with(retryPolicy).get(() ->
+              BigQueryUtils.getMaximumExistingSequenceNumber(context.getAllTables(), project, conf.getDatasetName(),
+                      bigQuery, encryptionConfig, MAX_TABLES_PER_QUERY));
+      LOG.info("Found maximum sequence number {}", maximumExistingSequenceNumber);
+      context.initializeSequenceNumber(maximumExistingSequenceNumber);
+    } catch (Exception e) {
+      throw new RuntimeException("Failed to compute the maximum sequence number among all the target tables " +
+              "selected for replication. Please make sure that if target tables exists, " +
+              "they should have '_sequence_num' column in them.", e);
+    }
 
-    LOG.info("Found maximum sequence number {}", maximumExistingSequenceNumber);
 
-    context.initializeSequenceNumber(maximumExistingSequenceNumber);
   }
 
   @Override
@@ -137,13 +157,10 @@ public class BigQueryTarget implements DeltaTarget {
       .getService();
 
     String stagingBucketName = getStagingBucketName(conf.stagingBucket, context.getPipelineId());
-    RetryPolicy<Object> retryPolicy = new RetryPolicy<>()
-            .withMaxAttempts(25)
-            .withMaxDuration(Duration.of(2, ChronoUnit.MINUTES))
-            .withBackoff(1, 30, ChronoUnit.SECONDS)
-            .withJitter(0.1)
-            .abortOn(throwable -> !((throwable instanceof IOException) ||
-                    (throwable instanceof StorageException && ((StorageException) throwable).isRetryable())));
+    RetryPolicy<Object> retryPolicy = createBaseRetryPolicy()
+            .handleIf(ex -> ex instanceof IOException
+                          || ex.getCause() instanceof IOException
+                          || (ex instanceof StorageException && ((StorageException) ex).isRetryable()));
 
     Bucket bucket = Failsafe.with(retryPolicy).get(() -> {
       Bucket b = storage.get(stagingBucketName);
@@ -201,22 +218,9 @@ public class BigQueryTarget implements DeltaTarget {
                                pipelineId.getGeneration());
   }
 
-  private <T> RetryPolicy<T> createRetryPolicyForBq() {
+  private <T> RetryPolicy<T> createBaseRetryPolicy() {
     RetryPolicy<T> retryPolicy = new RetryPolicy<>();
-    retryPolicy.abortOn(throwable -> {
-      if (throwable instanceof BigQueryException) {
-        BigQueryException t = (BigQueryException) throwable;
-        int code = t.getCode();
-        String reason = t.getError() != null ? t.getError().getReason() : null;
-        boolean isRateLimitExceeded =  RATE_LIMIT_EXCEEDED_CODES.contains(code)
-                && RATE_LIMIT_EXCEEDED_REASON.equals(reason);
-        boolean isBillingTierLimitExceeded = code == BILLING_TIER_LIMIT_EXCEEDED_CODE
-                && BILLING_TIER_LIMIT_EXCEEDED_REASON.equals(reason);
-        return !(t.isRetryable() || isRateLimitExceeded || isBillingTierLimitExceeded);
-      }
-      return false;
-    });
-    return retryPolicy.withMaxAttempts(25)
+    return retryPolicy.withMaxAttempts(2)
             .withMaxDuration(Duration.of(2, ChronoUnit.MINUTES))
             .withBackoff(1, 30, ChronoUnit.SECONDS)
             .withJitter(0.1);

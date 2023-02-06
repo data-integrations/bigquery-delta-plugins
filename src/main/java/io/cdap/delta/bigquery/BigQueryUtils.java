@@ -136,10 +136,12 @@ public final class BigQueryUtils {
       maxSequenceNumber = maxSequenceNumQueryPerTable.size() == 0 ? 0 : executeAggregateQuery(bigQuery,
                                                                                               builder.toString(),
                                                                                               encryptionConfiguration);
-    } catch (Exception e) {
+    } catch (InterruptedException e) {
       throw new RuntimeException("Failed to compute the maximum sequence number among all the target tables " +
-                                   "selected for replication. Please make sure that if target tables exists, " +
-                                   "they should have '_sequence_num' column in them.", e);
+              "selected for replication. Please make sure that if target tables exists, " +
+              "they should have '_sequence_num' column in them.", e);
+    } catch (Exception e) {
+      throw e;
     }
     return maxSequenceNumber;
   }
