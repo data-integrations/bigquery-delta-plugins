@@ -20,6 +20,7 @@ import com.google.auth.Credentials;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.ServiceOptions;
 import com.google.cloud.bigquery.BigQuery;
+import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.BigQueryOptions;
 import com.google.cloud.bigquery.EncryptionConfiguration;
 import com.google.cloud.storage.Bucket;
@@ -41,6 +42,8 @@ import io.cdap.delta.api.DeltaTargetContext;
 import io.cdap.delta.api.EventConsumer;
 import io.cdap.delta.api.assessment.StandardizedTableDetail;
 import io.cdap.delta.api.assessment.TableAssessor;
+import net.jodah.failsafe.Failsafe;
+import net.jodah.failsafe.RetryPolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -48,7 +51,12 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.temporal.ChronoUnit;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
 import javax.annotation.Nullable;
 
 /**
@@ -65,11 +73,22 @@ public class BigQueryTarget implements DeltaTarget {
   private static final String GCS_SCHEME = "gs://";
   private static final String GCP_CMEK_KEY_NAME = "gcp.cmek.key.name";
   private static final int MAX_TABLES_PER_QUERY = 1000;
+  private  static final String RATE_LIMIT_EXCEEDED_REASON = "rateLimitExceeded";
+  private static final Set<Integer> RATE_LIMIT_EXCEEDED_CODES = new HashSet<>(Arrays.asList(400, 403));
+  private  static final int BILLING_TIER_LIMIT_EXCEEDED_CODE = 400;
+  private  static final String BILLING_TIER_LIMIT_EXCEEDED_REASON = "billingTierLimitExceeded";
+  private  static final int RETRY_COUNT = 25;
+  private final int retryCount;
   private final Conf conf;
 
   @SuppressWarnings("unused")
   public BigQueryTarget(Conf conf) {
+    this(conf, RETRY_COUNT);
+  }
+  @SuppressWarnings("unused")
+  public BigQueryTarget(Conf conf, int retryCount) {
     this.conf = conf;
+    this.retryCount = retryCount;
   }
 
   @Override
@@ -93,13 +112,36 @@ public class BigQueryTarget implements DeltaTarget {
       .build()
       .getService();
 
-    long maximumExistingSequenceNumber =
-      BigQueryUtils.getMaximumExistingSequenceNumber(context.getAllTables(), project, conf.getDatasetName(),
-                                                     bigQuery, encryptionConfig, MAX_TABLES_PER_QUERY);
+    RetryPolicy<Object> retryPolicy = createBaseRetryPolicy()
+            .handleIf(ex -> {
+              if (ex.getCause() instanceof IOException) {
+                return true;
+              }
+              if (ex instanceof BigQueryException) {
+                BigQueryException t = (BigQueryException) ex;
+                int code = t.getCode();
+                String reason = t.getError() != null ? t.getError().getReason() : null;
+                boolean isRateLimitExceeded =  RATE_LIMIT_EXCEEDED_CODES.contains(code)
+                        && RATE_LIMIT_EXCEEDED_REASON.equals(reason);
+                boolean isBillingTierLimitExceeded = code == BILLING_TIER_LIMIT_EXCEEDED_CODE
+                        && BILLING_TIER_LIMIT_EXCEEDED_REASON.equals(reason);
+                return t.isRetryable() || isRateLimitExceeded || isBillingTierLimitExceeded;
+              }
+              return false;
+            });
+    try {
+      long maximumExistingSequenceNumber = Failsafe.with(retryPolicy).get(() ->
+              BigQueryUtils.getMaximumExistingSequenceNumber(context.getAllTables(), project, conf.getDatasetName(),
+                      bigQuery, encryptionConfig, MAX_TABLES_PER_QUERY));
+      LOG.info("Found maximum sequence number {}", maximumExistingSequenceNumber);
+      context.initializeSequenceNumber(maximumExistingSequenceNumber);
+    } catch (Exception e) {
+      throw new RuntimeException("Failed to compute the maximum sequence number among all the target tables " +
+              "selected for replication. Please make sure that if target tables exists, " +
+              "they should have '_sequence_num' column in them.", e);
+    }
 
-    LOG.info("Found maximum sequence number {}", maximumExistingSequenceNumber);
 
-    context.initializeSequenceNumber(maximumExistingSequenceNumber);
   }
 
   @Override
@@ -125,31 +167,43 @@ public class BigQueryTarget implements DeltaTarget {
       .getService();
 
     String stagingBucketName = getStagingBucketName(conf.stagingBucket, context.getPipelineId());
-    Bucket bucket = storage.get(stagingBucketName);
-    if (bucket == null) {
-      try {
-        BucketInfo.Builder builder = BucketInfo.newBuilder(stagingBucketName);
-        if (cmekKey != null) {
-          builder.setDefaultKmsKeyName(cmekKey);
-        }
-        if (conf.stagingBucketLocation != null && !conf.stagingBucketLocation.trim().isEmpty()) {
-          builder.setLocation(conf.stagingBucketLocation);
-        }
-        bucket = storage.create(builder.build());
-      } catch (StorageException e) {
-        // It is possible that in multiple worker instances scenario
-        // bucket is created by another worker instance after this worker instance
-        // determined that the bucket does not exists. Ignore error if bucket already exists.
-        if (e.getCode() != CONFLICT) {
-          throw new IOException(
-            String.format("Unable to create staging bucket '%s' in project '%s'. "
-                            + "Please make sure the service account has permission to create buckets, "
-                            + "or create the bucket before starting the program.", stagingBucketName, project), e);
-        }
-        bucket = storage.get(stagingBucketName);
-      }
-    }
+    RetryPolicy<Object> retryPolicy = createBaseRetryPolicy()
+            .handleIf(ex -> ex instanceof IOException
+                          || ex.getCause() instanceof IOException
+                          || (ex instanceof StorageException && ((StorageException) ex).isRetryable()));
 
+    Bucket bucket;
+    try {
+      bucket = Failsafe.with(retryPolicy).get(() -> {
+        Bucket b = storage.get(stagingBucketName);
+        if (b == null) {
+          try {
+            BucketInfo.Builder builder = BucketInfo.newBuilder(stagingBucketName);
+            if (cmekKey != null) {
+              builder.setDefaultKmsKeyName(cmekKey);
+            }
+            if (conf.stagingBucketLocation != null && !conf.stagingBucketLocation.trim().isEmpty()) {
+              builder.setLocation(conf.stagingBucketLocation);
+            }
+            b = storage.create(builder.build());
+          } catch (StorageException e) {
+            // It is possible that in multiple worker instances scenario
+            // bucket is created by another worker instance after this worker instance
+            // determined that the bucket does not exists. Ignore error if bucket already exists.
+            if (e.getCode() != CONFLICT) {
+              throw e;
+            }
+            b = storage.get(stagingBucketName);
+          }
+        }
+        return b;
+      });
+    } catch (Exception e) {
+      throw new RuntimeException(
+              String.format("Unable to create staging bucket '%s' in project '%s'. " +
+                      "Please make sure the service account has permission to create buckets, " +
+                      "or create the bucket before starting the program.", stagingBucketName, project), e);
+    }
     return new BigQueryEventConsumer(context, storage, bigQuery, bucket, project,
                                      conf.getLoadIntervalSeconds(), conf.getStagingTablePrefix(),
                                      conf.requiresManualDrops(), encryptionConfig, null, conf.getDatasetName(),
@@ -176,6 +230,14 @@ public class BigQueryTarget implements DeltaTarget {
   private static String stringifyPipelineId(DeltaPipelineId pipelineId) {
     return Joiner.on("-").join(STAGING_BUCKET_PREFIX, pipelineId.getNamespace(), pipelineId.getApp(),
                                pipelineId.getGeneration());
+  }
+
+  private <T> RetryPolicy<T> createBaseRetryPolicy() {
+    RetryPolicy<T> retryPolicy = new RetryPolicy<>();
+    return retryPolicy.withMaxAttempts(retryCount)
+            .withMaxDuration(Duration.of(2, ChronoUnit.MINUTES))
+            .withBackoff(1, 30, ChronoUnit.SECONDS)
+            .withJitter(0.1);
   }
 
   /**
