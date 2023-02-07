@@ -242,12 +242,10 @@ public class BigQueryTargetTest {
     PowerMockito.doReturn(bucketInfoBuilder).when(BucketInfo.class);
     BucketInfo.newBuilder(Mockito.nullable(String.class));
 
-    Throwable exception = new StorageException(403, null);
+    Throwable exception = new StorageException(408, null);
     Mockito.when(storage.create(Mockito.any(BucketInfo.class))).thenThrow(exception);
-
     try {
-      //IO Exception thrown is wrapped by Failsafe.Failsafe wraps checked exceptions.
-      exceptionRule.expect(FailsafeException.class);
+      exceptionRule.expect(RuntimeException.class);
       bqTarget.createConsumer(deltaTargetContext);
     } finally {
       //Verify at least 1 retry
@@ -257,12 +255,10 @@ public class BigQueryTargetTest {
 
   @Test
   public void testCreateConsumerRetryableFailureForGcsGet() throws Exception {
-
     Throwable exception = new StorageException(500, null);
     Mockito.when(storage.get(Mockito.anyString())).thenThrow(exception);
-
     try {
-      exceptionRule.expect(exception.getClass());
+      exceptionRule.expect(RuntimeException.class);
       bqTarget.createConsumer(deltaTargetContext);
     } finally {
       //Verify at least 1 retry
@@ -274,9 +270,8 @@ public class BigQueryTargetTest {
   public void testCreateConsumerNonRetryableFailure() throws Exception {
     Throwable exception = new StorageException(501, null);
     Mockito.when(storage.get(Mockito.anyString())).thenThrow(exception);
-
     try {
-      exceptionRule.expect(exception.getClass());
+      exceptionRule.expect(RuntimeException.class);
       bqTarget.createConsumer(deltaTargetContext);
     } finally {
       //Verify no retry

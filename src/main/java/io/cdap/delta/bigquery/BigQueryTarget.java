@@ -172,34 +172,38 @@ public class BigQueryTarget implements DeltaTarget {
                           || ex.getCause() instanceof IOException
                           || (ex instanceof StorageException && ((StorageException) ex).isRetryable()));
 
-    Bucket bucket = Failsafe.with(retryPolicy).get(() -> {
-      Bucket b = storage.get(stagingBucketName);
-      if (b == null) {
-        try {
-          BucketInfo.Builder builder = BucketInfo.newBuilder(stagingBucketName);
-          if (cmekKey != null) {
-            builder.setDefaultKmsKeyName(cmekKey);
+    Bucket bucket;
+    try {
+      bucket = Failsafe.with(retryPolicy).get(() -> {
+        Bucket b = storage.get(stagingBucketName);
+        if (b == null) {
+          try {
+            BucketInfo.Builder builder = BucketInfo.newBuilder(stagingBucketName);
+            if (cmekKey != null) {
+              builder.setDefaultKmsKeyName(cmekKey);
+            }
+            if (conf.stagingBucketLocation != null && !conf.stagingBucketLocation.trim().isEmpty()) {
+              builder.setLocation(conf.stagingBucketLocation);
+            }
+            b = storage.create(builder.build());
+          } catch (StorageException e) {
+            // It is possible that in multiple worker instances scenario
+            // bucket is created by another worker instance after this worker instance
+            // determined that the bucket does not exists. Ignore error if bucket already exists.
+            if (e.getCode() != CONFLICT) {
+              throw e;
+            }
+            b = storage.get(stagingBucketName);
           }
-          if (conf.stagingBucketLocation != null && !conf.stagingBucketLocation.trim().isEmpty()) {
-            builder.setLocation(conf.stagingBucketLocation);
-          }
-          b = storage.create(builder.build());
-        } catch (StorageException e) {
-          // It is possible that in multiple worker instances scenario
-          // bucket is created by another worker instance after this worker instance
-          // determined that the bucket does not exists. Ignore error if bucket already exists.
-          if (e.getCode() != CONFLICT) {
-            throw new RuntimeException(
-                    String.format("Unable to create staging bucket '%s' in project '%s'. " +
-                            "Please make sure the service account has permission to create buckets, " +
-                            "or create the bucket before starting the program.", stagingBucketName, project), e);
-          }
-          b = storage.get(stagingBucketName);
         }
-      }
-      return b;
-    });
-
+        return b;
+      });
+    } catch (Exception e) {
+      throw new RuntimeException(
+              String.format("Unable to create staging bucket '%s' in project '%s'. " +
+                      "Please make sure the service account has permission to create buckets, " +
+                      "or create the bucket before starting the program.", stagingBucketName, project), e);
+    }
     return new BigQueryEventConsumer(context, storage, bigQuery, bucket, project,
                                      conf.getLoadIntervalSeconds(), conf.getStagingTablePrefix(),
                                      conf.requiresManualDrops(), encryptionConfig, null, conf.getDatasetName(),
