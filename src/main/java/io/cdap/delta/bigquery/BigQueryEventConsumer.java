@@ -178,8 +178,8 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final String project;
   private final EncryptionConfiguration encryptionConfig;
   private final RetryPolicy<Object> commitRetryPolicy;
-  private final Map<TableId, Long> latestSeenSequence;
-  private final Map<TableId, Long> latestMergedSequence;
+  private final Map<String, Long> latestSeenSequence;
+  private final Map<String, Long> latestMergedSequence;
   private final Map<TableId, List<String>> primaryKeyStore;
   private final Map<TableId, SortKeyState> sortKeyStore;
   private final boolean requireManualDrops;
@@ -597,21 +597,23 @@ public class BigQueryEventConsumer implements EventConsumer {
 
     TableId tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
 
-    Long latestMergedSequencedNum = latestMergedSequence.get(tableId);
+    String tableKey = getTableKey(tableId);
+
+    Long latestMergedSequencedNum = latestMergedSequence.get(tableKey);
     if (latestMergedSequencedNum == null) {
       // first event of the table
       latestMergedSequencedNum = getLatestSequenceNum(tableId);
-      latestMergedSequence.put(tableId, latestMergedSequencedNum);
+      latestMergedSequence.put(tableKey, latestMergedSequencedNum);
       // latestSeenSequence will replace the latestMergedSequence at the end of flush()
       // set this default value to avoid dup query of max merged sequence num in next `flush()`
-      latestSeenSequence.put(tableId, latestMergedSequencedNum);
+      latestSeenSequence.put(tableKey, latestMergedSequencedNum);
     }
 
     // it's possible that some previous events were merged to target table but offset were not committed
     // because offset is committed when the whole batch of all the tables were merged.
     // so it's possible we see an event that was already merged to target table
     if (sequenceNumber > latestMergedSequencedNum) {
-      latestSeenSequence.put(tableId, sequenceNumber);
+      latestSeenSequence.put(tableKey, sequenceNumber);
       //Only write events which have not already been applied
       Failsafe.with(gcsWriterRetryPolicy)
               .run(() -> gcsWriter.write(new Sequenced<>(normalizedDMLEvent, sequenceNumber)));
@@ -633,6 +635,10 @@ public class BigQueryEventConsumer implements EventConsumer {
     if (sourceEventOrdering == SourceProperties.Ordering.UN_ORDERED && !getCachedSortKeys(tableId).isPresent()) {
       storeSortKeys(tableId, event.getSortKeys());
     }
+  }
+
+  private String getTableKey(TableId tableId) {
+    return tableId.getDataset() + ":" + tableId.getTable();
   }
 
   @VisibleForTesting
@@ -1082,8 +1088,10 @@ public class BigQueryEventConsumer implements EventConsumer {
      * WHERE B._row_id IS NULL
      */
 
+    String tableKey = getTableKey(targetTableId);
+
     String diffQuery =
-      createDiffQuery(stagingTableId, primaryKeys, blob.getBatchId(), latestMergedSequence.get(targetTableId),
+      createDiffQuery(stagingTableId, primaryKeys, blob.getBatchId(), latestMergedSequence.get(tableKey),
                       sourceRowIdSupported, sourceEventOrdering, sortKeys);
     if (LOG.isTraceEnabled()) {
       LOG.trace("Diff query : {}", diffQuery);
