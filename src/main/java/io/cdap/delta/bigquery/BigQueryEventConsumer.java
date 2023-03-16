@@ -343,7 +343,10 @@ public class BigQueryEventConsumer implements EventConsumer {
   private void handleDDL(DDLEvent event, String normalizedDatabaseName, String normalizedTableName,
                          String normalizedStagingTableName)
     throws IOException, DeltaFailureException, InterruptedException {
-
+    LOG.info("DDL Event={}, sequenceNumber={}", event, latestSequenceNum);
+    if (event.getSchema() != null) {
+      LOG.debug("Schema={}", event.getSchema());
+    }
     switch (event.getOperation().getType()) {
       case CREATE_DATABASE:
         DatasetId datasetId = DatasetId.of(project, normalizedDatabaseName);
