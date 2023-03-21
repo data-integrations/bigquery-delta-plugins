@@ -50,6 +50,7 @@ import io.cdap.delta.api.DeltaTargetContext;
 import io.cdap.delta.api.Offset;
 import io.cdap.delta.api.Sequenced;
 import org.apache.avro.file.DataFileWriter;
+import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -71,6 +72,10 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Random;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -670,6 +675,44 @@ public class BigQueryConsumerTest {
     } finally {
       Mockito.verify(bigQuery, Mockito.times(1)).create(Mockito.any(TableInfo.class));
       eventConsumer.stop();
+    }
+  }
+
+  @Test
+  public void testTemporaryFailureIsRetriedInProcessDDL() throws Exception {
+    int numTables = 1;
+    List<String> tables = getTables(numTables);
+
+    Mockito.when(bigQuery.getTable(Mockito.any())).thenReturn(null);
+    BigQueryError error = new BigQueryError("ratelimit", "loc", "error");
+    Mockito.when(bigQuery.create(Mockito.any(TableInfo.class)))
+      .thenThrow(new BigQueryException(429, "error", error));
+
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
+                                                                    bigQuery, bucket, "project",
+                                                                    LOAD_INTERVAL_ONE_SECOND, "_staging",
+                                                                    false, null, 2L,
+                                                                    DATASET, false);
+    eventConsumer.start();
+
+    ExecutorService executorService = Executors.newFixedThreadPool(1);
+
+    try {
+      List<Future<Object>> futures = executorService.invokeAll(Arrays.asList(() -> {
+        generateDDL(eventConsumer, tables);
+        return null;
+      }), 5, TimeUnit.SECONDS);
+
+      for (Future<Object> future : futures) {
+        future.get();
+      }
+    } catch (Exception e) {
+      //Task was forcefully cancelled as it was still in retry
+      Assert.assertEquals(CancellationException.class, e.getClass());
+    } finally {
+      eventConsumer.stop();
+      executorService.shutdownNow();
+      Mockito.verify(bigQuery, Mockito.atLeast(2)).create(Mockito.any(TableInfo.class));
     }
   }
 

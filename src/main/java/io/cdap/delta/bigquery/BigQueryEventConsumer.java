@@ -70,14 +70,11 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -268,6 +265,7 @@ public class BigQueryEventConsumer implements EventConsumer {
         flush();
       } catch (InterruptedException e) {
         // just return and let things end
+        Thread.currentThread().interrupt();
       } catch (Exception e) {
         flushException = e;
       }
@@ -287,6 +285,7 @@ public class BigQueryEventConsumer implements EventConsumer {
       executorService.awaitTermination(10, TimeUnit.SECONDS);
     } catch (InterruptedException e) {
       // just return and let everything end
+      Thread.currentThread().interrupt();
     }
   }
 
@@ -307,20 +306,22 @@ public class BigQueryEventConsumer implements EventConsumer {
 
     RetryPolicy<Object> retryPolicy = createBaseRetryPolicy(baseRetryDelay)
       .abortOn(ex -> ex instanceof DeltaFailureException)
-      .onFailedAttempt(failureContext -> {
+      .onFailedAttempt(failureContext ->
         handleBigQueryFailure(normalizedDatabaseName, event.getOperation().getSchemaName(), normalizedTableName,
-                              String.format("Failed to apply '%s' DDL event",  GSON.toJson(event)), failureContext);
-      });
+                              String.format("Failed to apply '%s' DDL event",  GSON.toJson(event)), failureContext)
+      );
 
     runWithRetryPolicy(
       ctx -> {
         try {
           handleDDL(event, normalizedDatabaseName, normalizedTableName, normalizedStagingTableName);
         } catch (BigQueryException ex) {
-          //Unsupported DDL Operation
+          logBigQueryError(ex);
           if (isInvalidOperationError(ex)) {
+            //Unsupported DDL Operation
             throw new DeltaFailureException("Non recoverable error in applying DDL event, aborting", ex);
           }
+          throw ex;
         }
       },
       String.format("Exhausted retries trying to apply '%s' DDL event",
@@ -681,7 +682,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
 
     DeltaFailureException exception = null;
-    for (Future mergeFuture : mergeFutures) {
+    for (Future<?> mergeFuture : mergeFutures) {
       try {
         getMergeFuture(mergeFuture);
       } catch (InterruptedException e) {
@@ -709,7 +710,7 @@ public class BigQueryEventConsumer implements EventConsumer {
                    blob.getDataset(),
                    blob.getSourceDbSchemaName(),
                    blob.getTable(),
-                   String.format("Failed to load a batch of changes from GCS into staging table for %s.%s",
+                   String.format("Failed to load a batch of changes from GCS into target table for %s.%s",
                                  blob.getDataset(), blob.getTable()),
                    "Exhausted retries while attempting to load changed to the staging table.");
     try {
@@ -719,7 +720,7 @@ public class BigQueryEventConsumer implements EventConsumer {
       LOG.warn("Failed to delete temporary GCS object {} in bucket {}. The object will need to be manually deleted.",
                blob.getBlob().getBlobId().getName(), blob.getBlob().getBlobId().getBucket(), e);
     }
-    LOG.debug("Direct loading of batch {} of {} events into target table {}.{} done", blob.getBatchId(),
+    LOG.debug("Completed direct loading of batch {} of {} events into target table {}.{}", blob.getBatchId(),
               blob.getNumEvents(), blob.getDataset(), blob.getTable());
   }
 
@@ -1394,9 +1395,9 @@ public class BigQueryEventConsumer implements EventConsumer {
       //Do not retry in case of invalid requests errors, but let the retrey happen from Worker
       //which can potentially mitigate the issue
       .abortOn(this::isInvalidOperationError)
-      .onFailedAttempt(failureContext -> {
-        handleBigQueryFailure(dataset, schema, table, onFailedAttemptMessage, failureContext);
-      }));
+      .onFailedAttempt(failureContext ->
+        handleBigQueryFailure(dataset, schema, table, onFailedAttemptMessage, failureContext)
+      ));
   }
 
   private void runWithRetryPolicy(ContextualRunnable runnable, String retriesExhaustedMessage,
@@ -1429,10 +1430,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
     //Logging error list
     if (t instanceof BigQueryException) {
-      List<BigQueryError> errors = ((BigQueryException) t).getErrors();
-      if (errors != null) {
-        errors.forEach(err -> LOG.error(err.getMessage()));
-      }
+      logBigQueryError((BigQueryException) t);
     }
     // its ok to set table state every retry, because this is a no-op if there is no change to the state.
     try {
@@ -1556,7 +1554,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     if (fields.stream().noneMatch(f -> f.getName().equals(Constants.SORT_KEYS))) {
       Schema.Field sortKeyField = Schema.Field.of(Constants.SORT_KEYS, Schemas.getSortKeysSchema(sortKeys));
 
-      List<Field> fieldList = new ArrayList<Field>(fields);
+      List<Field> fieldList = new ArrayList<>(fields);
       fieldList.add(Schemas.convertToBigQueryField(sortKeyField));
       // Update the table with the new schema
       com.google.cloud.bigquery.Schema updatedSchema = com.google.cloud.bigquery.Schema.of(fieldList);
@@ -1642,5 +1640,12 @@ public class BigQueryEventConsumer implements EventConsumer {
 
   private boolean isInvalidOperationError(Throwable ex) {
     return ex instanceof BigQueryException && BigQueryUtils.isInvalidOperationError((BigQueryException) ex);
+  }
+
+  private void logBigQueryError(BigQueryException t) {
+    List<BigQueryError> errors = t.getErrors();
+    if (errors != null) {
+      errors.forEach(err -> LOG.error(err.getMessage()));
+    }
   }
 }
