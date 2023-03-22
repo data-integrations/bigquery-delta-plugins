@@ -197,6 +197,8 @@ public class BigQueryEventConsumer implements EventConsumer {
   private long latestSequenceNum;
   private Exception flushException;
   private final AtomicBoolean shouldStop;
+
+  private final SchemaMappingCache schemaMappingCache;
   private RetryPolicy<Object> gcsWriterRetryPolicy = new RetryPolicy<>()
                                                 .withMaxAttempts(25)
                                                 .withMaxDuration(Duration.of(2, ChronoUnit.MINUTES))
@@ -225,6 +227,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     this.latestSeenSequence = new HashMap<>();
     this.primaryKeyStore = new HashMap<>();
     this.sortKeyStore = new HashMap<>();
+    this.schemaMappingCache = new SchemaMappingCache();
     this.commitRetryPolicy = new RetryPolicy<>()
       .withMaxAttempts(Integer.MAX_VALUE)
       .withMaxDuration(Duration.of(5, ChronoUnit.MINUTES))
@@ -441,6 +444,7 @@ public class BigQueryEventConsumer implements EventConsumer {
         // need to flush any changes before altering the table to ensure all changes before the schema change
         // are in the table when it is altered.
         flush();
+        schemaMappingCache.reset();
         // after a flush, the staging table will be gone, so no need to alter it.
         tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
         table = bigQuery.getTable(tableId);
@@ -589,7 +593,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     String normalizedDatabaseName = BigQueryUtils.getNormalizedDatasetName(datasetName,
        event.getOperation().getDatabaseName());
     String normalizedTableName = BigQueryUtils.normalizeTableName(event.getOperation().getTableName());
-    DMLEvent normalizedDMLEvent = BigQueryUtils.normalize(event)
+    DMLEvent normalizedDMLEvent = BigQueryUtils.normalize(event, schemaMappingCache)
       .setDatabaseName(normalizedDatabaseName)
       .setTableName(normalizedTableName)
       .build();

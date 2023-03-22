@@ -255,19 +255,19 @@ public final class BigQueryUtils {
     return name;
   }
 
-  public static DMLEvent.Builder normalize(DMLEvent event) {
+  public static DMLEvent.Builder normalize(DMLEvent event, SchemaMappingCache schemaMappingCache) {
 
     DMLEvent.Builder normalizedEventBuilder = DMLEvent.builder(event);
     if (event.getRow() != null) {
-      normalizedEventBuilder.setRow(normalize(event.getRow()));
+      normalizedEventBuilder.setRow(normalize(event.getRow(), schemaMappingCache));
     }
     if (event.getPreviousRow() != null) {
-      normalizedEventBuilder.setPreviousRow(normalize(event.getPreviousRow()));
+      normalizedEventBuilder.setPreviousRow(normalize(event.getPreviousRow(), schemaMappingCache));
     }
     return normalizedEventBuilder;
   }
 
-  private static StructuredRecord normalize(StructuredRecord record) {
+  private static StructuredRecord normalize(StructuredRecord record, SchemaMappingCache schemaMappingCache) {
     Schema schema = record.getSchema();
     List<Schema.Field> fields = schema.getFields();
     List<Schema.Field> normalizedFields = new ArrayList<>(fields.size());
@@ -277,8 +277,13 @@ public final class BigQueryUtils {
       normalizedFields.add(Schema.Field.of(normalizedName, field.getSchema()));
       valueMap.put(normalizedName, record.get(field.getName()));
     }
-    StructuredRecord.Builder builder =
-      StructuredRecord.builder(Schema.recordOf(schema.getRecordName(), normalizedFields));
+    Schema bqSchema =  schemaMappingCache.get(schema);
+    if(bqSchema == null){
+      LOG.info("Bq schema cache miss");
+      bqSchema = Schema.recordOf(schema.getRecordName(), normalizedFields);
+      schemaMappingCache.put(schema, bqSchema);
+    }
+    StructuredRecord.Builder builder = StructuredRecord.builder(bqSchema);
     for (Schema.Field normalizedField : normalizedFields) {
       builder.set(normalizedField.getName(), valueMap.get(normalizedField.getName()));
     }
