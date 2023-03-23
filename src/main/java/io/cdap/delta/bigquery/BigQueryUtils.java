@@ -268,26 +268,39 @@ public final class BigQueryUtils {
   }
 
   private static StructuredRecord normalize(StructuredRecord record, SchemaMappingCache schemaMappingCache) {
-    Schema schema = record.getSchema();
-    List<Schema.Field> fields = schema.getFields();
+    final Schema schema = record.getSchema();
+    final List<Schema.Field> fields = schema.getFields();
+    SchemaMappingCache.SchemaMapping schemaMapping = schemaMappingCache.get(schema);
+    if (schemaMapping == null) {
+      LOG.info("Bq schema cache miss");
+      schemaMapping = createSchemaMapping(record, schema, fields);
+      schemaMappingCache.put(schema, schemaMapping);
+    }
+
+    Schema bqSchema = schemaMapping.getMappedSchema();
+    Map<String, String> fieldNameMapping = schemaMapping.getFieldNameMapping();
+
+    StructuredRecord.Builder builder = StructuredRecord.builder(bqSchema);
+    for (Schema.Field field : fields) {
+      String fieldName = field.getName();
+      String normalizedFieldName = fieldNameMapping.get(fieldName);
+      builder.set(normalizedFieldName, record.get(fieldName));
+    }
+    return builder.build();
+  }
+
+  private static SchemaMappingCache.SchemaMapping createSchemaMapping(StructuredRecord record, Schema schema, List<Schema.Field> fields) {
+    SchemaMappingCache.SchemaMapping schemaMapping;
     List<Schema.Field> normalizedFields = new ArrayList<>(fields.size());
-    Map<String, Object> valueMap = new HashMap<>();
+    Map<String, String> fieldNameMapping = new HashMap<>();
     for (Schema.Field field : fields) {
       String normalizedName = normalizeFieldName(field.getName());
       normalizedFields.add(Schema.Field.of(normalizedName, field.getSchema()));
-      valueMap.put(normalizedName, record.get(field.getName()));
+      fieldNameMapping.put(field.getName(), normalizedName);
     }
-    Schema bqSchema =  schemaMappingCache.get(schema);
-    if(bqSchema == null){
-      LOG.info("Bq schema cache miss");
-      bqSchema = Schema.recordOf(schema.getRecordName(), normalizedFields);
-      schemaMappingCache.put(schema, bqSchema);
-    }
-    StructuredRecord.Builder builder = StructuredRecord.builder(bqSchema);
-    for (Schema.Field normalizedField : normalizedFields) {
-      builder.set(normalizedField.getName(), valueMap.get(normalizedField.getName()));
-    }
-    return builder.build();
+    Schema bqSchema = Schema.recordOf(schema.getRecordName(), normalizedFields);
+    schemaMapping = new SchemaMappingCache.SchemaMapping(bqSchema, fieldNameMapping);
+    return schemaMapping;
   }
 
   static String wrapInBackTick(String datasetName, String tableName) {

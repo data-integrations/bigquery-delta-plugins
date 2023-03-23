@@ -22,18 +22,37 @@ import io.cdap.cdap.api.data.schema.Schema;
 import java.util.Map;
 
 public class SchemaMappingCache {
-  private final Map<Schema, Schema> schemaMapping = new MapMaker()
+  private final Map<Schema, SchemaMapping> cache = new MapMaker()
     .weakKeys().makeMap();
 
-  public void reset(){
-    schemaMapping.clear();
+
+  static class SchemaMapping {
+    private Schema mappedSchema;
+    private Map<String, String> fieldNameMapping;
+
+    public SchemaMapping(Schema mappedSchema, Map<String, String> fieldNameMapping) {
+      this.mappedSchema = mappedSchema;
+      this.fieldNameMapping = fieldNameMapping;
+    }
+
+    public Schema getMappedSchema() {
+      return mappedSchema;
+    }
+
+    public Map<String, String> getFieldNameMapping() {
+      return fieldNameMapping;
+    }
   }
 
-  public void put(Schema key, Schema value){
-    schemaMapping.put(key, value);
+  public void reset() {
+    cache.clear();
   }
 
-  public Schema get(Schema key){
-    return schemaMapping.get(key);
+  public void put(Schema key, SchemaMapping mappedSchema) {
+    cache.put(key, mappedSchema);
+  }
+
+  public SchemaMapping get(Schema key) {
+    return cache.get(key);
   }
 }
