@@ -182,10 +182,6 @@ public class BigQueryEventConsumer implements EventConsumer {
   private final Map<String, Long> latestMergedSequence;
   private final Map<TableId, List<String>> primaryKeyStore;
   private final Map<TableId, SortKeyState> sortKeyStore;
-
-  private final Map<String, String> normalizedTableNames;
-  private final Map<String, String> normalizedDatasetNames;
-
   private final boolean requireManualDrops;
   private final long baseRetryDelay;
   private final int maxClusteringColumns;
@@ -266,8 +262,6 @@ public class BigQueryEventConsumer implements EventConsumer {
     this.retainStagingTable = Boolean.parseBoolean(context.getRuntimeArguments().get(RETAIN_STAGING_TABLE));
     this.softDeletesEnabled = softDeletesEnabled;
     this.shouldStop = new AtomicBoolean(false);
-    this.normalizedTableNames = new HashMap<>();
-    this.normalizedDatasetNames = new HashMap<>();
   }
 
   @Override
@@ -596,14 +590,9 @@ public class BigQueryEventConsumer implements EventConsumer {
       throw flushException;
     }
     DMLEvent event = sequencedEvent.getEvent();
-    String databaseName = event.getOperation().getDatabaseName();
-    String normalizedDatabaseName = normalizedDatasetNames
-      .computeIfAbsent(databaseName, (key) -> BigQueryUtils.getNormalizedDatasetName(datasetName, databaseName));
-
-    String tableName = event.getOperation().getTableName();
-    String normalizedTableName = normalizedTableNames
-      .computeIfAbsent(tableName, (key) ->  BigQueryUtils.normalizeTableName(tableName));
-
+    String normalizedDatabaseName = BigQueryUtils.getNormalizedDatasetName(datasetName,
+       event.getOperation().getDatabaseName());
+    String normalizedTableName = BigQueryUtils.normalizeTableName(event.getOperation().getTableName());
     DMLEvent normalizedDMLEvent = BigQueryUtils.normalize(event, schemaMappingCache)
       .setDatabaseName(normalizedDatabaseName)
       .setTableName(normalizedTableName)
