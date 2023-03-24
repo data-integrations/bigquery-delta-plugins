@@ -623,8 +623,11 @@ public class BigQueryEventConsumer implements EventConsumer {
 
     latestOffset = event.getOffset();
     latestSequenceNum = sequenceNumber;
+
     if (LOG.isTraceEnabled()) {
-      LOG.trace("DML event:{} offset: {} seq num : {}", GSON.toJson(event), latestOffset.get(), latestSequenceNum);
+      LOG.trace("DML event={}, sequenceNumber={}", GSON.toJson(event), latestSequenceNum);
+    } else if (LOG.isDebugEnabled()) {
+      LOG.debug("DML Event={}, sequenceNumber={}", event, latestSequenceNum);
     }
     context.incrementCount(event.getOperation());
 
