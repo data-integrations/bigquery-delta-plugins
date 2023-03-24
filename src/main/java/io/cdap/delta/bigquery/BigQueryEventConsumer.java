@@ -596,6 +596,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     DMLEvent normalizedDMLEvent = BigQueryUtils.normalize(event, schemaMappingCache)
       .setDatabaseName(normalizedDatabaseName)
       .setTableName(normalizedTableName)
+      .setSizeInBytes(event.getSizeInBytes())
       .build();
     long sequenceNumber = sequencedEvent.getSequenceNumber();
 
