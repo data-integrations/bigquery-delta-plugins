@@ -590,6 +590,14 @@ public class BigQueryEventConsumer implements EventConsumer {
       throw flushException;
     }
     DMLEvent event = sequencedEvent.getEvent();
+    long sequenceNumber = sequencedEvent.getSequenceNumber();
+
+    if (LOG.isTraceEnabled()) {
+      LOG.trace("DML Event={}, sequenceNumber={}", GSON.toJson(event), sequenceNumber);
+    } else if (LOG.isDebugEnabled()) {
+      LOG.debug("DML Event={}, sequenceNumber={}", event, sequenceNumber);
+    }
+
     String normalizedDatabaseName = BigQueryUtils.getNormalizedDatasetName(datasetName,
        event.getOperation().getDatabaseName());
     String normalizedTableName = BigQueryUtils.normalizeTableName(event.getOperation().getTableName());
@@ -597,7 +605,6 @@ public class BigQueryEventConsumer implements EventConsumer {
       .setDatabaseName(normalizedDatabaseName)
       .setTableName(normalizedTableName)
       .build();
-    long sequenceNumber = sequencedEvent.getSequenceNumber();
 
     TableId tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
 
@@ -624,11 +631,6 @@ public class BigQueryEventConsumer implements EventConsumer {
     latestOffset = event.getOffset();
     latestSequenceNum = sequenceNumber;
 
-    if (LOG.isTraceEnabled()) {
-      LOG.trace("DML event={}, sequenceNumber={}", GSON.toJson(event), latestSequenceNum);
-    } else if (LOG.isDebugEnabled()) {
-      LOG.debug("DML Event={}, sequenceNumber={}", event, latestSequenceNum);
-    }
     context.incrementCount(event.getOperation());
 
     if (event.isSnapshot()) {
