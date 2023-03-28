@@ -39,7 +39,7 @@ import java.util.Objects;
  * Assesses table information.
  */
 public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> {
-  private static final Logger LOGGER = LoggerFactory.getLogger(BigQueryAssessor.class);
+  private static final Logger LOG = LoggerFactory.getLogger(BigQueryAssessor.class);
 
   private final String stagingTablePrefix;
   // tables already assessed so far, key is table name and value is schema name
@@ -60,13 +60,13 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
         String bqType = toBigQueryType(field);
         columnAssessments.add(ColumnAssessment.builder(BigQueryUtils.normalizeFieldName(field.getName()), bqType)
           .setSourceColumn(field.getName()).build());
-        if (LOGGER.isDebugEnabled()) {
-          LOGGER.debug("Converting schema {} to {}", field.getSchema().isNullable() ?
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("Converting schema {} to {}", field.getSchema().isNullable() ?
             field.getSchema().getNonNullable() : field.getSchema(), bqType);
         }
       } catch (IllegalArgumentException e) {
-        LOGGER.warn("Failed to convert schema {} to any BQ type", field.getSchema().isNullable() ?
-            field.getSchema().getNonNullable() : field.getSchema());
+        LOG.warn("Failed to convert schema {} to any BQ type", field.getSchema().isNullable() ?
+            field.getSchema().getNonNullable() : field.getSchema(), e);
         columnAssessments.add(ColumnAssessment.builder(field.getName(), "N/A")
                                 .setSourceColumn(field.getName())
                                 .setSupport(ColumnSupport.NO)
