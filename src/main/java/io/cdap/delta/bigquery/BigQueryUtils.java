@@ -272,7 +272,7 @@ public final class BigQueryUtils {
     List<Schema.Field> fields = schema.getFields();
     SchemaMappingCache.SchemaMapping schemaMapping = schemaMappingCache.get(schema);
     if (schemaMapping == null) {
-      LOG.info("Mapping delta schema to BigQuery schema");
+      LOG.info("Mapping CDAP schema to BigQuery schema");
       schemaMapping = createSchemaMapping(schema, fields);
       schemaMappingCache.put(schema, schemaMapping);
     }
