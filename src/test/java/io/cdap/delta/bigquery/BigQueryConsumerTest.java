@@ -279,6 +279,7 @@ public class BigQueryConsumerTest {
     eventConsumer.stop();
   }
 
+  @Test
   public void testConsumerCommitFailureRetries() throws Exception {
     int numTables = 1;
     int numInsertEvents = 5;
@@ -286,7 +287,7 @@ public class BigQueryConsumerTest {
     List<String> tables = getTables(numTables);
 
     Throwable error = new Throwable("network error");
-    SuccessAfterNFailures answer = new SuccessAfterNFailures(3, error);
+    SuccessAfterNFailures answer = new SuccessAfterNFailures(5, error);
     Mockito.doAnswer(answer)
       .when(deltaTargetContext)
       .commitOffset(Mockito.any(Offset.class), Mockito.anyLong());
@@ -296,30 +297,33 @@ public class BigQueryConsumerTest {
                                                                     LOAD_INTERVAL_ONE_SECOND, "_staging",
                                                                     false, null, 2L,
                                                                     DATASET, false);
-    eventConsumer.start();
+    try {
+      eventConsumer.start();
 
-    generateDDL(eventConsumer, tables);
-    generateInsertEvents(eventConsumer, tables, numInsertEvents, CDC);
+      generateDDL(eventConsumer, tables);
+      generateInsertEvents(eventConsumer, tables, numInsertEvents, CDC);
 
-    //Wait for flush with some buffer
-    waitForFlushWithBuffer(LOAD_INTERVAL_ONE_SECOND, 10);
+      //Wait for flush with some buffer
+      waitForFlushWithBuffer(LOAD_INTERVAL_ONE_SECOND, 11);
 
-    Mockito.verify(dataFileWriter, Mockito.times(numTables * numInsertEvents))
-      .append(Mockito.any());
-    Mockito.verify(dataFileWriter, Mockito.atLeast(numTables)).close();
-    Mockito.verify(bigQuery, Mockito.times(1)).create(datasetIs(DATASET));
-    Mockito.verify(bigQuery, Mockito.atLeastOnce()).getTable(Mockito.any(TableId.class));
-    //Mocks are setup such that the table already exists (for simplicity)
-    Mockito.verify(bigQuery, Mockito.never()).create(Mockito.any(TableInfo.class));
-    //Load and merge jobs
-    Mockito.verify(bigQuery, Mockito.atLeast(numTables)).create(Mockito.any(JobInfo.class));
-    //Delete staging table
-    Mockito.verify(bigQuery, Mockito.times(numTables)).delete(Mockito.any(TableId.class));
-    //Verify there were 3 retries
-    Mockito.verify(deltaTargetContext, Mockito.atLeast(3))
-      .commitOffset(Mockito.any(Offset.class), Mockito.anyLong());
+      Mockito.verify(dataFileWriter, Mockito.times(numTables * numInsertEvents))
+        .append(Mockito.any());
+      Mockito.verify(dataFileWriter, Mockito.atLeast(numTables)).close();
+      Mockito.verify(bigQuery, Mockito.times(1)).create(datasetIs(DATASET));
+      Mockito.verify(bigQuery, Mockito.atLeastOnce()).getTable(Mockito.any(TableId.class));
+      //Mocks are setup such that the table already exists (for simplicity)
+      Mockito.verify(bigQuery, Mockito.never()).create(Mockito.any(TableInfo.class));
+      //Load and merge jobs
+      Mockito.verify(bigQuery, Mockito.atLeast(numTables)).create(Mockito.any(JobInfo.class));
+      //Delete staging table
+      Mockito.verify(bigQuery, Mockito.times(numTables)).delete(Mockito.any(TableId.class));
+      //Verify there were 3 retries
+      Mockito.verify(deltaTargetContext, Mockito.atLeast(3))
+        .commitOffset(Mockito.any(Offset.class), Mockito.anyLong());
+    } finally {
+      eventConsumer.stop();
+    }
 
-    eventConsumer.stop();
   }
 
   @Test
