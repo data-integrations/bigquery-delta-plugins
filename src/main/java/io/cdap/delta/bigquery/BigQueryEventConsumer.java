@@ -227,10 +227,10 @@ public class BigQueryEventConsumer implements EventConsumer {
       .withMaxDuration(Duration.of(5, ChronoUnit.MINUTES))
       .withBackoff(1, 60, ChronoUnit.SECONDS)
       .onFailedAttempt(failureContext -> {
-        // log on the first failure and then once per minute
-        if (failureContext.getAttemptCount() == 1 || !failureContext.getElapsedTime().minusMinutes(1).isNegative()) {
-          LOG.warn("Error committing offset. Changes will be blocked until this succeeds.",
-                   failureContext.getLastFailure());
+        // log on the first failure and then every fifth failed attempt
+        if (failureContext.getAttemptCount() == 1 || failureContext.getAttemptCount() % 5 == 0) {
+          LOG.warn("Error committing offset (Attempt:{}). Changes will be blocked until this succeeds, ",
+                   failureContext.getAttemptCount(), failureContext.getLastFailure());
         }
       })
       .onSuccess(successContext -> {
