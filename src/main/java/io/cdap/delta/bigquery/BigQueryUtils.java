@@ -272,21 +272,14 @@ public final class BigQueryUtils {
   private static StructuredRecord normalize(DMLOperation operation, StructuredRecord record,
                                             SchemaMappingCache schemaMappingCache) {
     Schema schema = record.getSchema();
-    List<Schema.Field> fields = schema.getFields();
-    SchemaMappingCache.SchemaMapping schemaMapping = schemaMappingCache.get(schema);
-    if (schemaMapping == null) {
-      // This should be infrequent as the mapping should be fetched from cache
-      // unless there are schema changes
-      LOG.info("Mapping CDAP schema to BigQuery schema for table {}", operation.getTableName());
-      schemaMapping = createSchemaMapping(schema, fields);
-      schemaMappingCache.put(schema, schemaMapping);
-    }
+    SchemaMappingCache.SchemaMapping schemaMapping = getSchemaMapping(operation.getTableName(),
+                                                                      schemaMappingCache, schema);
 
     Schema bqSchema = schemaMapping.getMappedSchema();
     Map<String, String> fieldNameMapping = schemaMapping.getFieldNameMapping();
 
     StructuredRecord.Builder builder = StructuredRecord.builder(bqSchema);
-    for (Schema.Field field : fields) {
+    for (Schema.Field field : schema.getFields()) {
       String fieldName = field.getName();
       String normalizedFieldName = fieldNameMapping.get(fieldName);
       builder.set(normalizedFieldName, record.get(fieldName));
@@ -294,8 +287,22 @@ public final class BigQueryUtils {
     return builder.build();
   }
 
-  private static SchemaMappingCache.SchemaMapping createSchemaMapping(Schema schema, List<Schema.Field> fields) {
-    SchemaMappingCache.SchemaMapping schemaMapping;
+  private static SchemaMappingCache.SchemaMapping getSchemaMapping(String table,
+                                                                   SchemaMappingCache schemaMappingCache,
+                                                                   Schema schema) {
+    SchemaMappingCache.SchemaMapping schemaMapping = schemaMappingCache.get(schema);
+    if (schemaMapping == null) {
+      // This should be infrequent as the mapping should be fetched from cache
+      // unless there are schema changes
+      LOG.info("Mapping CDAP schema to BigQuery schema for table {}", table);
+      schemaMapping = createSchemaMapping(schema);
+      schemaMappingCache.put(schema, schemaMapping);
+    }
+    return schemaMapping;
+  }
+
+  private static SchemaMappingCache.SchemaMapping createSchemaMapping(Schema schema) {
+    List<Schema.Field> fields = schema.getFields();
     List<Schema.Field> normalizedFields = new ArrayList<>(fields.size());
     Map<String, String> fieldNameMapping = new HashMap<>();
     for (Schema.Field field : fields) {
@@ -304,8 +311,7 @@ public final class BigQueryUtils {
       fieldNameMapping.put(field.getName(), normalizedName);
     }
     Schema bqSchema = Schema.recordOf(schema.getRecordName(), normalizedFields);
-    schemaMapping = new SchemaMappingCache.SchemaMapping(bqSchema, fieldNameMapping);
-    return schemaMapping;
+    return new SchemaMappingCache.SchemaMapping(bqSchema, fieldNameMapping);
   }
 
   static String wrapInBackTick(String datasetName, String tableName) {
