@@ -572,8 +572,8 @@ public class BigQueryEventConsumer implements EventConsumer {
     try {
       Failsafe.with(commitRetryPolicy).run(() -> {
         if (latestOffset != null) {
-          if (LOG.isTraceEnabled()) {
-            LOG.trace("Committing offset : {} and seq num: {}", latestOffset.get(), latestSequenceNum);
+          if (LOG.isDebugEnabled()) {
+            LOG.debug("Committing offset : {} and seq num: {}", latestOffset.get(), latestSequenceNum);
           }
           context.commitOffset(latestOffset, latestSequenceNum);
         }
@@ -1402,7 +1402,12 @@ public class BigQueryEventConsumer implements EventConsumer {
       .abortOn(this::isInvalidOperationError)
       .onFailedAttempt(failureContext ->
         handleBigQueryFailure(dataset, schema, table, onFailedAttemptMessage, failureContext)
-      ));
+      )
+      .onSuccess(successContext -> {
+        if (successContext.getAttemptCount() > 1) {
+          LOG.info("BQ operation completed successfully after {} retries", (successContext.getAttemptCount() - 1));
+        }
+      }));
   }
 
   private void runWithRetryPolicy(ContextualRunnable runnable, String retriesExhaustedMessage,
