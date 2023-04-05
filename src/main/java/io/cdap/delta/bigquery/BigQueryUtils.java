@@ -35,6 +35,7 @@ import com.google.common.collect.Sets;
 import io.cdap.cdap.api.data.format.StructuredRecord;
 import io.cdap.cdap.api.data.schema.Schema;
 import io.cdap.delta.api.DMLEvent;
+import io.cdap.delta.api.DMLOperation;
 import io.cdap.delta.api.SourceTable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -259,20 +260,24 @@ public final class BigQueryUtils {
 
     DMLEvent.Builder normalizedEventBuilder = DMLEvent.builder(event);
     if (event.getRow() != null) {
-      normalizedEventBuilder.setRow(normalize(event.getRow(), schemaMappingCache));
+      normalizedEventBuilder.setRow(normalize(event.getOperation(), event.getRow(), schemaMappingCache));
     }
     if (event.getPreviousRow() != null) {
-      normalizedEventBuilder.setPreviousRow(normalize(event.getPreviousRow(), schemaMappingCache));
+      normalizedEventBuilder.setPreviousRow(normalize(event.getOperation(), event.getPreviousRow(),
+                                                      schemaMappingCache));
     }
     return normalizedEventBuilder;
   }
 
-  private static StructuredRecord normalize(StructuredRecord record, SchemaMappingCache schemaMappingCache) {
+  private static StructuredRecord normalize(DMLOperation operation, StructuredRecord record,
+                                            SchemaMappingCache schemaMappingCache) {
     Schema schema = record.getSchema();
     List<Schema.Field> fields = schema.getFields();
     SchemaMappingCache.SchemaMapping schemaMapping = schemaMappingCache.get(schema);
     if (schemaMapping == null) {
-      LOG.info("Mapping CDAP schema to BigQuery schema");
+      // This should be infrequent as the mapping should be fetched from cache
+      // unless there are schema changes
+      LOG.info("Mapping CDAP schema to BigQuery schema for table {}", operation.getTableName());
       schemaMapping = createSchemaMapping(schema, fields);
       schemaMappingCache.put(schema, schemaMapping);
     }
