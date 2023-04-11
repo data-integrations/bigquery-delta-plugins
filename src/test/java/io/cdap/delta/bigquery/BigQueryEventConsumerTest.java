@@ -449,6 +449,7 @@ public class BigQueryEventConsumerTest {
                 Schema.Field.of("id", Schema.of(Schema.Type.INT)),
                 Schema.Field.of("name", Schema.of(Schema.Type.STRING)),
                 Schema.Field.of("created", Schema.of(Schema.LogicalType.TIMESTAMP_MILLIS)),
+                Schema.Field.of("updated", Schema.nullableOf(Schema.of(Schema.LogicalType.DATETIME))),
                 // alter bday to be nullable
                 Schema.Field.of("bday", Schema.nullableOf(Schema.of(Schema.LogicalType.DATE))),
                 // add a new nullable age field
@@ -473,6 +474,7 @@ public class BigQueryEventConsumerTest {
       Assert.assertEquals(LegacySQLTypeName.INTEGER, bqFields.get("id").getType());
       Assert.assertEquals(LegacySQLTypeName.STRING, bqFields.get("name").getType());
       Assert.assertEquals(LegacySQLTypeName.TIMESTAMP, bqFields.get("created").getType());
+      Assert.assertEquals(LegacySQLTypeName.DATETIME, bqFields.get("updated").getType());
       Assert.assertEquals(LegacySQLTypeName.DATE, bqFields.get("bday").getType());
       Assert.assertEquals(Field.Mode.NULLABLE, bqFields.get("bday").getMode());
       Assert.assertEquals(LegacySQLTypeName.INTEGER, bqFields.get("age").getType());
