@@ -35,6 +35,7 @@ import com.google.common.collect.Sets;
 import io.cdap.cdap.api.data.format.StructuredRecord;
 import io.cdap.cdap.api.data.schema.Schema;
 import io.cdap.delta.api.DMLEvent;
+import io.cdap.delta.api.DMLOperation;
 import io.cdap.delta.api.SourceTable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -255,34 +256,62 @@ public final class BigQueryUtils {
     return name;
   }
 
-  public static DMLEvent.Builder normalize(DMLEvent event) {
+  public static DMLEvent.Builder normalize(DMLEvent event, SchemaMappingCache schemaMappingCache) {
 
     DMLEvent.Builder normalizedEventBuilder = DMLEvent.builder(event);
     if (event.getRow() != null) {
-      normalizedEventBuilder.setRow(normalize(event.getRow()));
+      normalizedEventBuilder.setRow(normalize(event.getOperation(), event.getRow(), schemaMappingCache));
     }
     if (event.getPreviousRow() != null) {
-      normalizedEventBuilder.setPreviousRow(normalize(event.getPreviousRow()));
+      normalizedEventBuilder.setPreviousRow(normalize(event.getOperation(), event.getPreviousRow(),
+                                                      schemaMappingCache));
     }
     return normalizedEventBuilder;
   }
 
-  private static StructuredRecord normalize(StructuredRecord record) {
+  private static StructuredRecord normalize(DMLOperation operation, StructuredRecord record,
+                                            SchemaMappingCache schemaMappingCache) {
     Schema schema = record.getSchema();
+    SchemaMappingCache.SchemaMapping schemaMapping = getSchemaMapping(operation.getTableName(),
+                                                                      schemaMappingCache, schema);
+
+    Schema bqSchema = schemaMapping.getMappedSchema();
+    Map<String, String> fieldNameMapping = schemaMapping.getFieldNameMapping();
+
+    StructuredRecord.Builder builder = StructuredRecord.builder(bqSchema);
+    for (Schema.Field field : schema.getFields()) {
+      String fieldName = field.getName();
+      String normalizedFieldName = fieldNameMapping.get(fieldName);
+      builder.set(normalizedFieldName, record.get(fieldName));
+    }
+    return builder.build();
+  }
+
+  private static SchemaMappingCache.SchemaMapping getSchemaMapping(String table,
+                                                                   SchemaMappingCache schemaMappingCache,
+                                                                   Schema schema) {
+    SchemaMappingCache.SchemaMapping schemaMapping = schemaMappingCache.get(schema);
+    if (schemaMapping == null) {
+      // This should be infrequent as the mapping should be fetched from cache
+      // unless there are schema changes
+      LOG.info("Mapping CDAP schema to BigQuery schema for table {}", table);
+      schemaMapping = createSchemaMapping(schema);
+      schemaMappingCache.put(schema, schemaMapping);
+    }
+    return schemaMapping;
+  }
+
+  private static SchemaMappingCache.SchemaMapping createSchemaMapping(Schema schema) {
     List<Schema.Field> fields = schema.getFields();
     List<Schema.Field> normalizedFields = new ArrayList<>(fields.size());
-    Map<String, Object> valueMap = new HashMap<>();
+    Map<String, String> fieldNameMapping = new HashMap<>();
     for (Schema.Field field : fields) {
       String normalizedName = normalizeFieldName(field.getName());
       normalizedFields.add(Schema.Field.of(normalizedName, field.getSchema()));
-      valueMap.put(normalizedName, record.get(field.getName()));
+      fieldNameMapping.put(field.getName(), normalizedName);
     }
-    StructuredRecord.Builder builder =
-      StructuredRecord.builder(Schema.recordOf(schema.getRecordName(), normalizedFields));
-    for (Schema.Field normalizedField : normalizedFields) {
-      builder.set(normalizedField.getName(), valueMap.get(normalizedField.getName()));
-    }
-    return builder.build();
+    Schema bqSchema = Schema.recordOf(schema.getRecordName(), normalizedFields);
+    return new SchemaMappingCache.SchemaMapping(bqSchema, fieldNameMapping);
   }
 
   static String wrapInBackTick(String datasetName, String tableName) {

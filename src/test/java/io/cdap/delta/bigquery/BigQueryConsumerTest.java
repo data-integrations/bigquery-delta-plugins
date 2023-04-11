@@ -79,6 +79,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -97,6 +98,7 @@ public class BigQueryConsumerTest {
   private static final String TABLE = "table";
   private static final String PRIMARY_KEY_COL = "id";
   private static final String NAME_COL = "name";
+  private static final String AMOUNT_COL = "amount";
   private static final String MERGE_JOB = "merge";
   private static final long GENERATION = 1L;
   private static final int BQ_JOB_TIME_BOUND = 2;
@@ -106,6 +108,12 @@ public class BigQueryConsumerTest {
   private static final Schema schema = Schema.recordOf(TABLE,
                                                        Schema.Field.of(PRIMARY_KEY_COL, Schema.of(Schema.Type.INT)),
                                                        Schema.Field.of(NAME_COL, Schema.of(Schema.Type.STRING)));
+
+  private static final Schema alteredSchema = Schema.recordOf(TABLE,
+                                                       Schema.Field.of(PRIMARY_KEY_COL, Schema.of(Schema.Type.INT)),
+                                                       Schema.Field.of(NAME_COL, Schema.of(Schema.Type.STRING)),
+                                                       Schema.Field.of(AMOUNT_COL,
+                                                                       Schema.nullableOf(Schema.of(Schema.Type.INT))));
   private static final BlobId blobId = BlobId.of(BUCKET, TABLE, GENERATION);
   private static final int WAIT_BUFFER_SEC = 2;
   private static final boolean CDC = false;
@@ -208,6 +216,61 @@ public class BigQueryConsumerTest {
   }
 
   @Test
+  public void testConsumerAlterTableAddColumn() throws Exception {
+    int numTables = 5;
+    int numInsertEvents = 10;
+
+    List<String> tables = getTables(numTables);
+
+    BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(deltaTargetContext, storage,
+                                                                    bigQuery, bucket, "project",
+                                                                    LOAD_INTERVAL_SECONDS, "_staging",
+                                                                    false, null, 2L,
+                                                                    DATASET, false);
+    try {
+      eventConsumer.start();
+
+      generateDDL(eventConsumer, tables);
+      generateInsertEvents(eventConsumer, tables, numInsertEvents, CDC);
+
+      //Wait for flush with some buffer
+      waitForFlushWithBuffer(LOAD_INTERVAL_SECONDS, 1);
+
+      Mockito.verify(dataFileWriter, Mockito.times(numTables * numInsertEvents))
+        .append(Mockito.any());
+      Mockito.verify(dataFileWriter, Mockito.atLeast(numTables)).close();
+      Mockito.verify(bigQuery, Mockito.times(1)).create(datasetIs(DATASET));
+      Mockito.verify(bigQuery, Mockito.atLeastOnce()).getTable(Mockito.any(TableId.class));
+      //Load and merge jobs
+      Mockito.verify(bigQuery, Mockito.atLeast(numTables)).create(Mockito.any(JobInfo.class));
+
+      Mockito.clearInvocations(dataFileWriter, bigQuery);
+
+      generateAlterDDL(eventConsumer, tables);
+      generateInsertEvents(eventConsumer, tables, numInsertEvents, CDC, 1000, () ->
+        StructuredRecord.builder(alteredSchema)
+          .set(PRIMARY_KEY_COL, random.nextInt())
+          .set(NAME_COL, "alice")
+          .set(AMOUNT_COL, 10)
+          .build());
+
+      //Wait for flush with some buffer
+      waitForFlushWithBuffer(LOAD_INTERVAL_SECONDS, 1);
+
+      Mockito.verify(bigQuery, Mockito.times(numTables)).update(Mockito.any(TableInfo.class));
+      Mockito.verify(dataFileWriter, Mockito.atLeast(numTables)).close();
+      //Load and merge jobs
+      Mockito.verify(bigQuery, Mockito.atLeast(numTables)).create(Mockito.any(JobInfo.class));
+
+
+    } finally {
+      LOG.info("Stopping eventConsumer");
+      eventConsumer.stop();
+      LOG.info("Stopped eventConsumer");
+    }
+  }
+
+  @Test
   public void testConsumerEmptyDataset() throws Exception {
     int numTables = 1;
     int numInsertEvents = 10;
@@ -262,7 +325,7 @@ public class BigQueryConsumerTest {
     //Wait for flush with some buffer
     waitForFlushWithBuffer(LOAD_INTERVAL_ONE_SECOND, 1);
 
-    generateInsertEvents(eventConsumer, tables, numInsertEvents, CDC, 10);
+    generateInsertEvents(eventConsumer, tables, 10, CDC, 1000);
 
     //Wait for flush with some buffer
     waitForFlushWithBuffer(LOAD_INTERVAL_ONE_SECOND, 1);
@@ -768,20 +831,52 @@ public class BigQueryConsumerTest {
     }
   }
 
+  private void generateAlterDDL(BigQueryEventConsumer eventConsumer, List<String> tables) throws Exception {
+    for (String table : tables) {
+      DDLEvent createTable = DDLEvent.builder()
+        .setOperation(DDLOperation.Type.ALTER_TABLE)
+        .setDatabaseName(DATABASE)
+        .setTableName(table)
+        .setSchema(alteredSchema)
+        .setPrimaryKey(primaryKeys)
+        .setOffset(new Offset())
+        .build();
+      eventConsumer.applyDDL(new Sequenced<>(createTable, 0));
+    }
+  }
+
+  private void generateInsertEvents(BigQueryEventConsumer eventConsumer, List<String> tables,
+                                    int numEvents, boolean isSnapshot, int seqNo) throws Exception {
+    generateInsertEvents(eventConsumer, tables, numEvents, isSnapshot, seqNo, () ->
+      StructuredRecord.builder(schema)
+        .set(PRIMARY_KEY_COL, random.nextInt())
+        .set(NAME_COL, "alice")
+        .build());
+  }
+
   private void generateInsertEvents(BigQueryEventConsumer eventConsumer, List<String> tables,
                                     int numEvents, boolean isSnapshot) throws Exception {
-    generateInsertEvents(eventConsumer, tables, numEvents, isSnapshot, 0);
+    generateInsertEvents(eventConsumer, tables, numEvents, isSnapshot, () ->
+      StructuredRecord.builder(schema)
+        .set(PRIMARY_KEY_COL, random.nextInt())
+        .set(NAME_COL, "alice")
+        .build());
+  }
+
+  private void generateInsertEvents(BigQueryEventConsumer eventConsumer, List<String> tables,
+                                    int numEvents, boolean isSnapshot,
+                                    Supplier<StructuredRecord> recordSupplier) throws Exception {
+    generateInsertEvents(eventConsumer, tables, numEvents, isSnapshot, 0, recordSupplier);
   }
   private void generateInsertEvents(BigQueryEventConsumer eventConsumer, List<String> tables,
-                                    int numEvents, boolean isSnapshot, Integer seqNum) throws Exception {
+                                    int numEvents, boolean isSnapshot, Integer seqNum,
+                                    Supplier<StructuredRecord> recordSupplier) throws Exception {
     final AtomicInteger seq = new AtomicInteger(seqNum);
 
     for (String tableName : tables) {
       for (int num = 0; num < numEvents; num++) {
-        StructuredRecord record = StructuredRecord.builder(schema)
-          .set(PRIMARY_KEY_COL, random.nextInt())
-          .set(NAME_COL, "alice")
-          .build();
+
+        StructuredRecord record = recordSupplier.get();
 
         DMLEvent insert1Event = DMLEvent.builder()
           .setOperationType(DMLOperation.Type.INSERT)
