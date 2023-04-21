@@ -98,7 +98,7 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
         new Problem("Missing Primary Key",
                     String.format("Table '%s' in database '%s' must have a primary key in order to be replicated",
                                   tableName, dbName),
-                    "Please set the property 'source.connector.custom.primary.key' = " +
+                    "Please set the property 'source.connector.message.key.columns' = " +
                       "`<fully-qualified table>:<a comma-separated list of columns>' in the preferences to columns " +
                       "that can be used as an indexes. An index column is required to create a primary key in " +
                       "BigQuery to facilitate merges, and correct handling of updates.",
