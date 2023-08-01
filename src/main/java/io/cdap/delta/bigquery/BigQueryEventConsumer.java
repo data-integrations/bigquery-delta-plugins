@@ -540,8 +540,8 @@ public class BigQueryEventConsumer implements EventConsumer {
     try {
       Failsafe.with(commitRetryPolicy).run(() -> {
         if (latestOffset != null) {
-          if (LOG.isTraceEnabled()) {
-            LOG.trace("Committing offset : {} and seq num: {}", latestOffset.get(), latestSequenceNum);
+          if (LOG.isDebugEnabled()) {
+            LOG.debug("Committing offset : {} and seq num: {}", latestOffset.get(), latestSequenceNum);
           }
           context.commitOffset(latestOffset, latestSequenceNum);
         }
@@ -590,8 +590,8 @@ public class BigQueryEventConsumer implements EventConsumer {
 
     latestOffset = event.getOffset();
     latestSequenceNum = sequenceNumber;
-    if (LOG.isTraceEnabled()) {
-      LOG.trace("DML event:{} offset: {} seq num : {}", GSON.toJson(event), latestOffset.get(), latestSequenceNum);
+    if (LOG.isDebugEnabled()) {
+      LOG.debug(dmlEventToString(event, tableId));
     }
     context.incrementCount(event.getOperation());
 
@@ -604,6 +604,22 @@ public class BigQueryEventConsumer implements EventConsumer {
     if (sourceEventOrdering == SourceProperties.Ordering.UN_ORDERED && !getCachedSortKeys(tableId).isPresent()) {
       storeSortKeys(tableId, event.getSortKeys());
     }
+  }
+
+  private String dmlEventToString(DMLEvent event, TableId tableId) throws DeltaFailureException, IOException {
+    List<String> primaryKeys = getPrimaryKeys(tableId);
+    StringBuilder sb = new StringBuilder("Processing DML event with PKs : { ");
+
+    for (String pk : primaryKeys) {
+      sb.append(pk)
+        .append(" = ")
+        .append(event.getRow().get(pk).toString())
+        .append(", ");
+    }
+    sb.append("} and offset : ")
+      .append(event.getOffset());
+
+    return sb.toString();
   }
 
   @VisibleForTesting
