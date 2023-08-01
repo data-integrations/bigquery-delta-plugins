@@ -591,7 +591,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     latestOffset = event.getOffset();
     latestSequenceNum = sequenceNumber;
     if (LOG.isDebugEnabled()) {
-      LOG.debug(dmlEventToString(event, tableId));
+      LOG.debug(dmlEventToString(event, tableId, sequenceNumber));
     }
     context.incrementCount(event.getOperation());
 
@@ -606,7 +606,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
   }
 
-  private String dmlEventToString(DMLEvent event, TableId tableId) throws DeltaFailureException, IOException {
+  private String dmlEventToString(DMLEvent event, TableId tableId, long sequenceNumber) throws DeltaFailureException, IOException {
     List<String> primaryKeys = getPrimaryKeys(tableId);
     StringBuilder sb = new StringBuilder("Processing DML event with PKs : { ");
 
@@ -616,8 +616,8 @@ public class BigQueryEventConsumer implements EventConsumer {
         .append(event.getRow().get(pk).toString())
         .append(", ");
     }
-    sb.append("} and offset : ")
-      .append(event.getOffset());
+    sb.append("} and offset : ").append(event.getOffset())
+      .append("and Seq no : ").append(sequenceNumber);
 
     return sb.toString();
   }
