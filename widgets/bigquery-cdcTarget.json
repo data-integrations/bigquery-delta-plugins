@@ -14,6 +14,14 @@
           "widget-attributes": {
             "default": "auto-detect"
           }
+        },
+        {
+          "name": "datasetProject",
+          "label": "DataSet Project ID",
+          "widget-type": "textbox",
+          "widget-attributes": {
+            "placeholder": "Project the dataset belongs to, if different from the project ID."
+          }
         }
       ]
     },

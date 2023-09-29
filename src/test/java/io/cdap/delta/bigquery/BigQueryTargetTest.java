@@ -125,6 +125,7 @@ public class BigQueryTargetTest {
 
     PowerMockito.when(conf, "getProject").thenReturn(PROJECT);
     PowerMockito.when(conf, "getCredentials").thenReturn(credentials);
+    PowerMockito.when(conf, "getDatasetProject").thenReturn(PROJECT);
 
     Mockito.when(bucketInfoBuilder.build()).thenReturn(bucketInfo);
 

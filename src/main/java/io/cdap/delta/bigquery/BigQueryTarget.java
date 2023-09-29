@@ -17,7 +17,9 @@
 package io.cdap.delta.bigquery;
 
 import com.google.auth.Credentials;
+import com.google.auth.oauth2.ExternalAccountCredentials;
 import com.google.auth.oauth2.GoogleCredentials;
+import com.google.auth.oauth2.ServiceAccountCredentials;
 import com.google.cloud.ServiceOptions;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryException;
@@ -30,6 +32,7 @@ import com.google.cloud.storage.StorageException;
 import com.google.cloud.storage.StorageOptions;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
+import com.google.common.base.Strings;
 import io.cdap.cdap.api.annotation.Description;
 import io.cdap.cdap.api.annotation.Macro;
 import io.cdap.cdap.api.annotation.Name;
@@ -54,8 +57,10 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import javax.annotation.Nullable;
 
@@ -80,6 +85,9 @@ public class BigQueryTarget implements DeltaTarget {
   private  static final int RETRY_COUNT = 25;
   private final int retryCount;
   private final Conf conf;
+  public static final List<String> BIGQUERY_SCOPES = Arrays.asList("https://www.googleapis.com/auth/drive",
+                                                                   "https://www.googleapis.com/auth/bigquery");
+
 
   @SuppressWarnings("unused")
   public BigQueryTarget(Conf conf) {
@@ -98,19 +106,18 @@ public class BigQueryTarget implements DeltaTarget {
 
   @Override
   public void initialize(DeltaTargetContext context) throws Exception {
+
     Credentials credentials = conf.getCredentials();
-    String project = conf.getProject();
+
+    String project = conf.getDatasetProject();
+
     String cmekKey = context.getRuntimeArguments().get(GCP_CMEK_KEY_NAME) != null ?
       context.getRuntimeArguments().get(GCP_CMEK_KEY_NAME) : conf.getEncryptionKeyName();
 
     EncryptionConfiguration encryptionConfig = cmekKey == null ? null :
       EncryptionConfiguration.newBuilder().setKmsKeyName(cmekKey).build();
 
-    BigQuery bigQuery = BigQueryOptions.newBuilder()
-      .setCredentials(credentials)
-      .setProjectId(project)
-      .build()
-      .getService();
+    BigQuery bigQuery = getBigQuery(project, credentials);
 
     RetryPolicy<Object> retryPolicy = createBaseRetryPolicy()
             .handleIf(ex -> {
@@ -147,22 +154,18 @@ public class BigQueryTarget implements DeltaTarget {
   @Override
   public EventConsumer createConsumer(DeltaTargetContext context) throws IOException {
     Credentials credentials = conf.getCredentials();
-    String project = conf.getProject();
+    String project = conf.getDatasetProject();
+
     String cmekKey = context.getRuntimeArguments().get(GCP_CMEK_KEY_NAME) != null ?
       context.getRuntimeArguments().get(GCP_CMEK_KEY_NAME) : conf.getEncryptionKeyName();
 
     EncryptionConfiguration encryptionConfig = cmekKey == null ? null :
       EncryptionConfiguration.newBuilder().setKmsKeyName(cmekKey).build();
 
-    BigQuery bigQuery = BigQueryOptions.newBuilder()
-      .setCredentials(credentials)
-      .setProjectId(project)
-      .build()
-      .getService();
+    BigQuery bigQuery = getBigQuery(project, credentials);
 
     Storage storage = StorageOptions.newBuilder()
       .setCredentials(credentials)
-      .setProjectId(project)
       .build()
       .getService();
 
@@ -240,16 +243,46 @@ public class BigQueryTarget implements DeltaTarget {
             .withJitter(0.1);
   }
 
+  public static BigQuery getBigQuery(String project, @Nullable Credentials credentials) {
+    BigQueryOptions.Builder bigqueryBuilder = BigQueryOptions.newBuilder().setProjectId(project);
+    if (credentials != null) {
+      Set<String> scopes = new HashSet<>(BIGQUERY_SCOPES);
+
+      if (credentials instanceof ServiceAccountCredentials) {
+        scopes.addAll(((ServiceAccountCredentials) credentials).getScopes());
+      } else if (credentials instanceof ExternalAccountCredentials) {
+        Collection<String> currentScopes = ((ExternalAccountCredentials) credentials).getScopes();
+        if (currentScopes != null) {
+          scopes.addAll(currentScopes);
+        }
+      }
+
+      if (credentials instanceof GoogleCredentials) {
+        credentials = ((GoogleCredentials) credentials).createScoped(scopes);
+      }
+      bigqueryBuilder.setCredentials(credentials);
+    }
+    return bigqueryBuilder.build().getService();
+  }
+
   /**
    * Config for BigQuery target.
    */
   @SuppressWarnings("unused")
   public static class Conf extends PluginConfig {
 
+    public static final String AUTO_DETECT = "auto-detect";
     @Nullable
     @Description("Project of the BigQuery dataset. When running on a Google Cloud VM, this can be set to "
       + "'auto-detect', which will use the project of the VM.")
     private String project;
+
+    @Macro
+    @Nullable
+    @Description("The project the dataset belongs to. This is only required if the dataset is not " +
+      "in the same project that the BigQuery job will run in. If no value is given, it will" +
+      " default to the configured project ID.")
+    private String datasetProject;
 
     @Macro
     @Nullable
@@ -351,6 +384,21 @@ public class BigQueryTarget implements DeltaTarget {
         return GoogleCredentials.fromStream(is)
           .createScoped(Collections.singleton("https://www.googleapis.com/auth/cloud-platform"));
       }
+    }
+    public String getDatasetProject() {
+      // if it is set to 'auto-detect,' the default project ID will be automatically detected
+      // otherwise if the user provides an ID, it will be used.
+      // or else IllegalArgument exception will be thrown
+      if (AUTO_DETECT.equalsIgnoreCase(datasetProject)) {
+        String defaultProject = ServiceOptions.getDefaultProjectId();
+        if (defaultProject == null) {
+          throw new IllegalArgumentException(
+            "Could not detect Google Cloud project id from the environment. Please specify a dataset project id.");
+        }
+        return defaultProject;
+      }
+      // if it's null or empty that means it should be same as project
+      return Strings.isNullOrEmpty(datasetProject) ? getProject() : datasetProject;
     }
   }
 }

@@ -37,8 +37,17 @@ on the new primary key.
 Properties
 ----------
 
-**Project ID**: Project of the BigQuery dataset. When running on a Dataproc cluster, this can be left blank,
-which will use the project of the cluster.
+**Project ID**: Google Cloud Project ID, which uniquely identifies a project.
+It can be found on the Dashboard in the Google Cloud Platform Console. This is the project
+that the BigQuery job will run in. `BigQuery Job User` role on this project must be granted to the specified service
+account to run the job. If a temporary bucket needs to be created, the bucket will also be created in this project and
+'GCE Storage Bucket Admin' role on this project must be granted to the specified service account to create buckets.
+
+**Dataset Project ID**: Project the dataset belongs to. This is only required if the dataset is not
+in the same project that the BigQuery job will run in. If no value is given, it will default to the
+configured Project ID. `BigQuery Data Editor` role on this project must be granted to the specified service account to
+write BigQuery data to this project.
+
 
 **Location**: The location where the BigQuery dataset and GCS staging bucket will get created. For example, 'us-east1' 
 for regional bucket, 'us' for multi-regional bucket. A complete list of available locations can be found at 
