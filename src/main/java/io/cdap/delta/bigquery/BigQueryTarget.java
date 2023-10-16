@@ -154,7 +154,8 @@ public class BigQueryTarget implements DeltaTarget {
   @Override
   public EventConsumer createConsumer(DeltaTargetContext context) throws IOException {
     Credentials credentials = conf.getCredentials();
-    String project = conf.getDatasetProject();
+    String project = conf.getProject();
+    String datasetProject = conf.getDatasetProject();
 
     String cmekKey = context.getRuntimeArguments().get(GCP_CMEK_KEY_NAME) != null ?
       context.getRuntimeArguments().get(GCP_CMEK_KEY_NAME) : conf.getEncryptionKeyName();
@@ -207,7 +208,7 @@ public class BigQueryTarget implements DeltaTarget {
                       "Please make sure the service account has permission to create buckets, " +
                       "or create the bucket before starting the program.", stagingBucketName, project), e);
     }
-    return new BigQueryEventConsumer(context, storage, bigQuery, bucket, project,
+    return new BigQueryEventConsumer(context, storage, bigQuery, bucket, datasetProject,
                                      conf.getLoadIntervalSeconds(), conf.getStagingTablePrefix(),
                                      conf.requiresManualDrops(), encryptionConfig, null, conf.getDatasetName(),
                                      conf.softDeletesEnabled());

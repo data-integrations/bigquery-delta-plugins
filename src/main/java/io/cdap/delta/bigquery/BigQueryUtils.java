@@ -125,7 +125,7 @@ public final class BigQueryUtils {
                                    normalizeTableName(table.getTable()));
       if (existingTableIDs.contains(tableId)) {
         maxSequenceNumQueryPerTable.add(String.format("SELECT MAX(_sequence_num) as max_sequence_num FROM %s",
-                                                      wrapInBackTick(tableId.getDataset(), tableId.getTable())));
+                                  wrapInBackTick(tableId.getProject(), tableId.getDataset(), tableId.getTable())));
       }
     }
 
@@ -148,7 +148,7 @@ public final class BigQueryUtils {
     }
 
     String query = String.format("SELECT MAX(_sequence_num) FROM %s",
-                                 wrapInBackTick(tableId.getDataset(), tableId.getTable()));
+            wrapInBackTick(tableId.getProject(), tableId.getDataset(), tableId.getTable()));
     return executeAggregateQuery(bigQuery, query, encryptionConfig);
   }
 
@@ -316,6 +316,11 @@ public final class BigQueryUtils {
 
   static String wrapInBackTick(String datasetName, String tableName) {
     return BACKTICK + datasetName + "." + tableName + BACKTICK;
+  }
+
+  static String wrapInBackTick(String project, String datasetName, String tableName) {
+
+    return BACKTICK + project + "." + datasetName + "." + tableName + BACKTICK;
   }
 
   /**

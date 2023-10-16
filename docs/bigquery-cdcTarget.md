@@ -43,7 +43,7 @@ that the BigQuery job will run in. `BigQuery Job User` role on this project must
 account to run the job. If a temporary bucket needs to be created, the bucket will also be created in this project and
 'GCE Storage Bucket Admin' role on this project must be granted to the specified service account to create buckets.
 
-**Dataset Project ID**: Project the dataset belongs to. This is only required if the dataset is not
+**Dataset Project ID**: Project the destination dataset belongs to. This is only required if the dataset is not
 in the same project that the BigQuery job will run in. If no value is given, it will default to the
 configured Project ID. `BigQuery Data Editor` role on this project must be granted to the specified service account to
 write BigQuery data to this project.
