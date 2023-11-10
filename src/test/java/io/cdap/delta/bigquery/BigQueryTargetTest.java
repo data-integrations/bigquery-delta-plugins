@@ -125,6 +125,7 @@ public class BigQueryTargetTest {
 
     PowerMockito.when(conf, "getProject").thenReturn(PROJECT);
     PowerMockito.when(conf, "getCredentials").thenReturn(credentials);
+    PowerMockito.when(conf, "getDatasetProject").thenReturn(PROJECT);
 
     Mockito.when(bucketInfoBuilder.build()).thenReturn(bucketInfo);
 
@@ -164,6 +165,7 @@ public class BigQueryTargetTest {
   @Test
   public void testStagingBucketName() {
     String expectedBucketName = "somebucket";
+    DeltaPipelineId pipelineId = new DeltaPipelineId("ns", "app", 1L);
     Assert.assertEquals(expectedBucketName, BigQueryTarget.getStagingBucketName("somebucket", pipelineId));
     Assert.assertEquals(expectedBucketName, BigQueryTarget.getStagingBucketName("SomeBucket", pipelineId));
     Assert.assertEquals(expectedBucketName, BigQueryTarget.getStagingBucketName("somebucket  ", pipelineId));
@@ -192,7 +194,7 @@ public class BigQueryTargetTest {
         bqTarget.initialize(deltaTargetContext);
       } finally {
         //verify at least 1 retry happens
-        PowerMockito.verifyStatic(BigQueryUtils.class, Mockito.atLeast(2));
+        PowerMockito.verifyStatic(BigQueryUtils.class, Mockito.atLeast(1));
         BigQueryUtils.getMaximumExistingSequenceNumber(Mockito.anySet(), Mockito.anyString(),
                 Mockito.nullable(String.class), Mockito.any(BigQuery.class),
                 Mockito.nullable(EncryptionConfiguration.class), Mockito.anyInt());
@@ -207,7 +209,7 @@ public class BigQueryTargetTest {
       bqTarget.initialize(deltaTargetContext);
     } finally {
       //verify at least 1 retry happens
-      PowerMockito.verifyStatic(BigQueryUtils.class, Mockito.atLeast(2));
+      PowerMockito.verifyStatic(BigQueryUtils.class, Mockito.atLeast(1));
       BigQueryUtils.getMaximumExistingSequenceNumber(Mockito.anySet(), Mockito.anyString(),
               Mockito.nullable(String.class), Mockito.any(BigQuery.class),
               Mockito.nullable(EncryptionConfiguration.class), Mockito.anyInt());

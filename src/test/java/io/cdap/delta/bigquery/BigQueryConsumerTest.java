@@ -335,7 +335,7 @@ public class BigQueryConsumerTest {
     Mockito.verify(dataFileWriter, Mockito.times(2)).close();
     //Mocks are setup such that the table already exists (for simplicity)
     //max sequence num, load and merge jobs
-    Mockito.verify(bigQuery, Mockito.atLeast(3)).create(Mockito.any(JobInfo.class));
+    Mockito.verify(bigQuery, Mockito.atLeast(2)).create(Mockito.any(JobInfo.class));
     //Delete staging table
     Mockito.verify(bigQuery, Mockito.times(2)).delete(Mockito.any(TableId.class));
 

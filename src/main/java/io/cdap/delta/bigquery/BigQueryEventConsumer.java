@@ -1195,11 +1195,13 @@ public class BigQueryEventConsumer implements EventConsumer {
       joinCondition += getOrderingCondition(sortKeys, "A", "B");
     }
     return "SELECT A.* FROM\n" +
-      "(SELECT * FROM " + BigQueryUtils.wrapInBackTick(stagingTable.getDataset(), stagingTable.getTable()) +
+      "(SELECT * FROM " +
+         BigQueryUtils.wrapInBackTick(stagingTable.getProject(), stagingTable.getDataset(), stagingTable.getTable()) +
       " WHERE _batch_id = " + batchId +
       " AND _sequence_num > " + latestSequenceNumInTargetTable + ") as A\n" +
       "LEFT OUTER JOIN\n" +
-      "(SELECT * FROM " + BigQueryUtils.wrapInBackTick(stagingTable.getDataset(), stagingTable.getTable()) +
+      "(SELECT * FROM " +
+         BigQueryUtils.wrapInBackTick(stagingTable.getProject(), stagingTable.getDataset(), stagingTable.getTable()) +
       " WHERE _batch_id = " + batchId +
       " AND _sequence_num > " + latestSequenceNumInTargetTable + ") as B\n" +
       "ON " + joinCondition +
@@ -1325,7 +1327,8 @@ public class BigQueryEventConsumer implements EventConsumer {
     }
 
     String mergeQuery = "MERGE " +
-      BigQueryUtils.wrapInBackTick(targetTableId.getDataset(), targetTableId.getTable()) + " as T\n" +
+      BigQueryUtils.wrapInBackTick(targetTableId.getProject(), targetTableId.getDataset(), targetTableId.getTable()) +
+      " as T\n" +
       "USING (" + diffQuery + ") as D\n" +
       "ON " + mergeCondition + "\n" +
       "WHEN MATCHED AND D._op = \"DELETE\" " + updateAndDeleteCondition + "THEN\n" +
