@@ -45,6 +45,7 @@ import java.util.Objects;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import javax.annotation.Nullable;
 
@@ -54,6 +55,7 @@ import javax.annotation.Nullable;
 public class MultiGCSWriter {
   private static final Logger LOG = LoggerFactory.getLogger(MultiGCSWriter.class);
   private static final Gson GSON = new Gson();
+  private static final String ENGLISH_CHARACTERS_REGEX = "[\\w]+";
   private final Storage storage;
   private final String bucket;
   private final String baseObjectName;
@@ -114,6 +116,12 @@ public class MultiGCSWriter {
       Schema.LogicalType logicalType
         = isNullable ? field.getSchema().getNonNullable().getLogicalType() : field.getSchema().getLogicalType();
       if (logicalType != null && logicalType.equals(Schema.LogicalType.DATETIME)) {
+        return true;
+      }
+      // If the field name is not in english characters, then we will use json format
+      // We do this as the avro load job in BQ does not support non-english characters in field names for now
+      String fieldName = field.getName();
+      if (!Pattern.matches(ENGLISH_CHARACTERS_REGEX, fieldName)) {
         return true;
       }
     }

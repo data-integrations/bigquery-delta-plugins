@@ -45,14 +45,14 @@ public class Schemas {
   }
 
 
-  public static com.google.cloud.bigquery.Schema convert(Schema schema) {
-    return com.google.cloud.bigquery.Schema.of(convertFields(schema.getFields()));
+  public static com.google.cloud.bigquery.Schema convert(Schema schema, boolean allowFlexibleColumnNaming) {
+    return com.google.cloud.bigquery.Schema.of(convertFields(schema.getFields(), allowFlexibleColumnNaming));
   }
 
-  private static List<Field> convertFields(List<Schema.Field> fields) {
+  private static List<Field> convertFields(List<Schema.Field> fields, boolean allowFlexibleColumnNaming) {
     List<Field> output = new ArrayList<>();
     for (Schema.Field field : fields) {
-      output.add(convertToBigQueryField(field));
+      output.add(convertToBigQueryField(field, allowFlexibleColumnNaming));
     }
     return output;
   }
@@ -109,13 +109,13 @@ public class Schemas {
    * Check if the BigQuery data type associated with the {@link Schema.Field} can be added
    * as a clustering column while creating BigQuery table.
    */
-  public static boolean isClusteringSupported(Schema.Field field) {
-    Field bigQueryField = convertToBigQueryField(field);
+  public static boolean isClusteringSupported(Schema.Field field, boolean allowFlexibleColumnNaming) {
+    Field bigQueryField = convertToBigQueryField(field, allowFlexibleColumnNaming);
     return CLUSTERING_SUPPORTED_TYPES.contains(bigQueryField.getType().getStandardType());
   }
 
-  public static Field convertToBigQueryField(Schema.Field field) {
-    String normalizedName = BigQueryUtils.normalizeFieldName(field.getName());
+  public static Field convertToBigQueryField(Schema.Field field, boolean allowFlexibleColumnNaming) {
+    String normalizedName = BigQueryUtils.normalizeFieldName(field.getName(), allowFlexibleColumnNaming);
     boolean isNullable = field.getSchema().isNullable();
     Schema fieldSchema = field.getSchema();
     fieldSchema = isNullable ? fieldSchema.getNonNullable() : fieldSchema;
@@ -145,7 +145,7 @@ public class Schemas {
       }
       output = Field.newBuilder(normalizedName, bqType).setMode(Field.Mode.REPEATED).build();
     } else if (type == Schema.Type.RECORD) {
-      List<Field> subFields = convertFields(fieldSchema.getFields());
+      List<Field> subFields = convertFields(fieldSchema.getFields(), allowFlexibleColumnNaming);
       output = Field.newBuilder(normalizedName, StandardSQLTypeName.STRUCT, FieldList.of(subFields)).build();
     } else {
       StandardSQLTypeName bqType = convertType(type);

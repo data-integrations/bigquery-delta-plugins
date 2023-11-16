@@ -153,23 +153,113 @@ public class BigQueryUtilsTest {
 
     @Test
     public void testNormalizeFieldName() {
+      int maxColumnNameLength = 300;
+      String prefix = "_";
       // only contains number and letter
-      assertEquals("a2fs", BigQueryUtils.normalizeFieldName("a2fs"));
+      assertEquals("a2fs", BigQueryUtils.normalizeFieldName("a2fs", false));
       // only contains number and letter start with number
-      assertEquals("_2fas", BigQueryUtils.normalizeFieldName("2fas"));
-      // only contains number and letter and length is 128
-      String name = Strings.repeat("a1", 64);
-      assertEquals(name, BigQueryUtils.normalizeFieldName(name));
-      // only contains number and letter, starts with number and length is 128
-      name = Strings.repeat("1a", 64);
-      assertEquals("_" + name.substring(0, 127), BigQueryUtils.normalizeFieldName(name));
+      assertEquals("_2fas", BigQueryUtils.normalizeFieldName("2fas", false));
+      // only contains number and letter and length is 300
+      String name = Strings.repeat("a1", 150);
+      assertEquals(name, BigQueryUtils.normalizeFieldName(name, false));
+      // only contains number and letter, starts with number and length is 300
+      name = Strings.repeat("1a", 150);
+      assertEquals(prefix + name.substring(0, maxColumnNameLength - prefix.length()),
+              BigQueryUtils.normalizeFieldName(name, false));
       // only contains number and letter and length is 130
-      name = Strings.repeat("a1", 65);
-      assertEquals(name.substring(0, 128), BigQueryUtils.normalizeFieldName(name));
+      name = Strings.repeat("a1", 151);
+      assertEquals(name.substring(0, maxColumnNameLength), BigQueryUtils.normalizeFieldName(name, false));
       // contains invalid character
-      assertEquals("ab_c", BigQueryUtils.normalizeFieldName("ab?/c"));
+      assertEquals("ab_c", BigQueryUtils.normalizeFieldName("ab?/c", false));
       // contains space
-      assertEquals("a2_fs", BigQueryUtils.normalizeFieldName("a2 fs"));
+      assertEquals("a2_fs", BigQueryUtils.normalizeFieldName("a2 fs", false));
+      // contains hyphen
+      assertEquals("a2-fs", BigQueryUtils.normalizeFieldName("a2-fs", true));
+      // contains chinese character
+      assertEquals("你好世界", BigQueryUtils.normalizeFieldName("你好世界", true));
+      // contains japanese character
+      assertEquals("こんにちは世界", BigQueryUtils.normalizeFieldName("こんにちは世界", true));
+      // contains emoji
+      assertEquals("_", BigQueryUtils.normalizeFieldName("👍", true));
+
+      // Testing valid characters
+
+      // underscore is a valid character
+      assertEquals("valid_", BigQueryUtils.normalizeFieldName("valid_", true));
+      // space is a valid character
+      assertEquals("Space is valid", BigQueryUtils.normalizeFieldName("Space is valid", true));
+      // ampersand is valid
+      assertEquals("ampersand&", BigQueryUtils.normalizeFieldName("ampersand&", true));
+      // percent is valid and not replaced
+      assertEquals("percent%", BigQueryUtils.normalizeFieldName("percent%", true));
+      // equals is valid and not replaced
+      assertEquals("equals=", BigQueryUtils.normalizeFieldName("equals=", true));
+      // plus is valid and not replaced
+      assertEquals("plus+", BigQueryUtils.normalizeFieldName("plus+", true));
+      // colon is valid and not replaced
+      assertEquals("colon:", BigQueryUtils.normalizeFieldName("colon:", true));
+      // apostrophe is valid and not replaced
+      assertEquals("apostrophe'", BigQueryUtils.normalizeFieldName("apostrophe'", true));
+      // less than is valid and not replaced
+      assertEquals("less_than<", BigQueryUtils.normalizeFieldName("less_than<", true));
+      // greater than is valid and not replaced
+      assertEquals("greater_than>", BigQueryUtils.normalizeFieldName("greater_than>", true));
+      // number sign is valid and not replaced
+      assertEquals("number_sign#", BigQueryUtils.normalizeFieldName("number_sign#", true));
+      // vertical line is valid and not replaced
+      assertEquals("vertical_line|", BigQueryUtils.normalizeFieldName("vertical_line|", true));
+
+      // Testing invalid characters
+
+      // test for tab
+      assertEquals("tab_", BigQueryUtils.normalizeFieldName("tab\t", true));
+      // exclamation is replaced with underscore
+      assertEquals("exclamation_", BigQueryUtils.normalizeFieldName("exclamation!", true));
+      // quotation is replaced with underscore
+      assertEquals("quotation_", BigQueryUtils.normalizeFieldName("quotation\"", true));
+      // dollar is replaced with underscore
+      assertEquals("dollar_", BigQueryUtils.normalizeFieldName("dollar$", true));
+      // left parenthesis is replaced with underscore
+      assertEquals("left_parenthesis_", BigQueryUtils.normalizeFieldName("left_parenthesis(", true));
+      // right parenthesis is replaced with underscore
+      assertEquals("right_parenthesis_", BigQueryUtils.normalizeFieldName("right_parenthesis)", true));
+      // asterisk is replaced with underscore
+      assertEquals("asterisk_", BigQueryUtils.normalizeFieldName("asterisk*", true));
+      // comma is replaced with underscore
+      assertEquals("comma_", BigQueryUtils.normalizeFieldName("comma,", true));
+      // period is replaced with underscore
+      assertEquals("period_", BigQueryUtils.normalizeFieldName("period.", true));
+      // slash is replaced with underscore
+      assertEquals("slash_", BigQueryUtils.normalizeFieldName("slash/", true));
+      // semicolon is replaced with underscore
+      assertEquals("semicolon_", BigQueryUtils.normalizeFieldName("semicolon;", true));
+      // question mark is replaced with underscore
+      assertEquals("question_mark_", BigQueryUtils.normalizeFieldName("question_mark?", true));
+      // at sign is replaced with underscore
+      assertEquals("at_sign_", BigQueryUtils.normalizeFieldName("at_sign@", true));
+      // left square bracket is replaced with underscore
+      assertEquals("left_square_bracket_", BigQueryUtils.normalizeFieldName("left_square_bracket[", true));
+      // backslash is replaced with underscore
+      assertEquals("backslash_", BigQueryUtils.normalizeFieldName("backslash\\", true));
+      // right square bracket is replaced with underscore
+      assertEquals("right_square_bracket_", BigQueryUtils.normalizeFieldName("right_square_bracket]", true));
+      // circumflex accent is replaced with underscore
+      assertEquals("circumflex_accent_", BigQueryUtils.normalizeFieldName("circumflex_accent^", true));
+      // grave accent is replaced with underscore
+      assertEquals("grave_accent_", BigQueryUtils.normalizeFieldName("grave_accent`", true));
+      // left curly bracket is replaced with underscore
+      assertEquals("left_curly_bracket_", BigQueryUtils.normalizeFieldName("left_curly_bracket{", true));
+      // right curly bracket is replaced with underscore
+      assertEquals("right_curly_bracket_", BigQueryUtils.normalizeFieldName("right_curly_bracket}", true));
+      // tilde is replaced with underscore
+      assertEquals("tilde_", BigQueryUtils.normalizeFieldName("tilde~", true));
+
+      // mixed valid and invalid characters
+      assertEquals("mixed%valid_invalid_", BigQueryUtils.normalizeFieldName("mixed%valid?invalid@", true));
+
+      // test for 2 space
+      assertEquals("a2  fs", BigQueryUtils.normalizeFieldName("a2  fs", true));
+
     }
 
     @Test
