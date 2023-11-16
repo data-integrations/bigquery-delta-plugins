@@ -179,7 +179,7 @@ public class BigQueryConsumerTest {
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_SECONDS, "_staging",
                                                                     false, null, 2L,
-                                                                    DATASET, false);
+                                                                    DATASET, false, false);
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
@@ -226,7 +226,7 @@ public class BigQueryConsumerTest {
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_SECONDS, "_staging",
                                                                     false, null, 2L,
-                                                                    DATASET, false);
+                                                                    DATASET, false, false);
     try {
       eventConsumer.start();
 
@@ -281,7 +281,7 @@ public class BigQueryConsumerTest {
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_SECONDS, "_staging",
                                                                     false, null, 2L,
-                                                                    EMPTY_DATASET_NAME, false);
+                                                                    EMPTY_DATASET_NAME, false, false);
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
@@ -317,7 +317,7 @@ public class BigQueryConsumerTest {
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_ONE_SECOND, "_staging",
                                                                     false, null, 2L,
-                                                                    EMPTY_DATASET_NAME, false);
+                                                                    EMPTY_DATASET_NAME, false, false);
     eventConsumer.start();
 
     generateInsertEvents(eventConsumer, tables, numInsertEvents, CDC);
@@ -359,7 +359,7 @@ public class BigQueryConsumerTest {
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_ONE_SECOND, "_staging",
                                                                     false, null, 2L,
-                                                                    DATASET, false);
+                                                                    DATASET, false, false);
     try {
       eventConsumer.start();
 
@@ -409,7 +409,7 @@ public class BigQueryConsumerTest {
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_ONE_SECOND, "_staging",
                                                                     false, null, 2L,
-                                                                    DATASET, false);
+                                                                    DATASET, false, false);
 
     try {
       exceptionRule.expect(IllegalStateException.class);
@@ -460,7 +460,7 @@ public class BigQueryConsumerTest {
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_ONE_SECOND, "_staging",
                                                                     false, null, 2L,
-                                                                    DATASET, false);
+                                                                    DATASET, false, false);
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
@@ -522,7 +522,7 @@ public class BigQueryConsumerTest {
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_ONE_SECOND, "_staging",
                                                                     false, null, 2L,
-                                                                    DATASET, false);
+                                                                    DATASET, false, false);
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
@@ -584,7 +584,7 @@ public class BigQueryConsumerTest {
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_ONE_SECOND, "_staging",
                                                                     false, null, 2L,
-                                                                    DATASET, false);
+                                                                    DATASET, false, false);
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
@@ -646,7 +646,7 @@ public class BigQueryConsumerTest {
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_ONE_SECOND, "_staging",
                                                                     false, null, 2L,
-                                                                    DATASET, false);
+                                                                    DATASET, false, false);
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
@@ -699,7 +699,7 @@ public class BigQueryConsumerTest {
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_ONE_SECOND, "_staging",
                                                                     false, null, 2L,
-                                                                    DATASET, false);
+                                                                    DATASET, false, false);
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
@@ -734,7 +734,7 @@ public class BigQueryConsumerTest {
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_ONE_SECOND, "_staging",
                                                                     false, null, 2L,
-                                                                    DATASET, false);
+                                                                    DATASET, false, false);
     eventConsumer.start();
     try {
       exceptionRule.expect(DeltaFailureException.class);
@@ -759,7 +759,7 @@ public class BigQueryConsumerTest {
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_ONE_SECOND, "_staging",
                                                                     false, null, 2L,
-                                                                    DATASET, false);
+                                                                    DATASET, false, false);
     eventConsumer.start();
 
     ExecutorService executorService = Executors.newFixedThreadPool(1);

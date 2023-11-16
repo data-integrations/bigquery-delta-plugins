@@ -194,6 +194,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   private long latestSequenceNum;
   private Exception flushException;
   private final AtomicBoolean shouldStop;
+  private final boolean allowFlexibleColumnNaming;
 
   private final SchemaMappingCache schemaMappingCache;
   private RetryPolicy<Object> gcsWriterRetryPolicy = new RetryPolicy<>()
@@ -209,7 +210,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   BigQueryEventConsumer(DeltaTargetContext context, Storage storage, BigQuery bigQuery, Bucket bucket,
                         String project, int loadIntervalSeconds, String stagingTablePrefix, boolean requireManualDrops,
                         @Nullable EncryptionConfiguration encryptionConfig, @Nullable Long baseRetryDelay,
-                        @Nullable String datasetName, boolean softDeletesEnabled) {
+                        @Nullable String datasetName, boolean softDeletesEnabled, boolean allowFlexibleColumnNaming) {
     this.context = context;
     this.bigQuery = bigQuery;
     this.loadIntervalSeconds = loadIntervalSeconds;
@@ -258,6 +259,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     this.datasetName = datasetName;
     this.retainStagingTable = Boolean.parseBoolean(context.getRuntimeArguments().get(RETAIN_STAGING_TABLE));
     this.softDeletesEnabled = softDeletesEnabled;
+    this.allowFlexibleColumnNaming = allowFlexibleColumnNaming;
     this.shouldStop = new AtomicBoolean(false);
   }
 
@@ -317,7 +319,8 @@ public class BigQueryEventConsumer implements EventConsumer {
     runWithRetryPolicy(
       ctx -> {
         try {
-          handleDDL(event, normalizedDatabaseName, normalizedTableName, normalizedStagingTableName);
+          handleDDL(event, normalizedDatabaseName, normalizedTableName, normalizedStagingTableName,
+                  allowFlexibleColumnNaming);
         } catch (BigQueryException ex) {
           logBigQueryError(ex);
           if (isInvalidOperationError(ex)) {
@@ -345,7 +348,7 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   private void handleDDL(DDLEvent event, String normalizedDatabaseName, String normalizedTableName,
-                         String normalizedStagingTableName)
+                         String normalizedStagingTableName, boolean allowFlexibleColumnNaming)
     throws IOException, DeltaFailureException, InterruptedException {
     LOG.info("DDL Event={}", event);
     if (LOG.isDebugEnabled() && event.getSchema() != null) {
@@ -395,20 +398,24 @@ public class BigQueryEventConsumer implements EventConsumer {
           bigQuery.delete(tableId);
         }
         List<String> primaryKeys = event.getPrimaryKey();
-        List<String> normalizedPrimaryKeys = primaryKeys.stream()
-          .map(BigQueryUtils::normalizeFieldName)
-          .collect(Collectors.toList());
+        List<String> normalizedPrimaryKeys = new ArrayList<>();
+        for (String primaryKey : primaryKeys) {
+          String normalizedKey = BigQueryUtils.normalizeFieldName(primaryKey, allowFlexibleColumnNaming);
+          normalizedPrimaryKeys.add(normalizedKey);
+        }
         updatePrimaryKeys(tableId, normalizedPrimaryKeys);
         // TODO: check schema of table if it exists already
         if (table == null) {
-          List<String> clusteringSupportedKeys = getClusteringSupportedKeys(primaryKeys, event.getSchema());
+          List<String> clusteringSupportedKeys = getClusteringSupportedKeys(primaryKeys, event.getSchema(),
+                  allowFlexibleColumnNaming);
           Clustering clustering = maxClusteringColumns <= 0 || clusteringSupportedKeys.isEmpty() ? null :
             Clustering.newBuilder()
               .setFields(clusteringSupportedKeys.subList(0, Math.min(maxClusteringColumns,
                                                                      clusteringSupportedKeys.size())))
               .build();
           TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
-            .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema(), tableId)))
+            .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema(), tableId),
+                    allowFlexibleColumnNaming))
             .setClustering(clustering)
             .build();
 
@@ -453,13 +460,15 @@ public class BigQueryEventConsumer implements EventConsumer {
         tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
         table = bigQuery.getTable(tableId);
         primaryKeys = event.getPrimaryKey();
-        List<String> clusteringSupportedKeys = getClusteringSupportedKeys(primaryKeys, event.getSchema());
+        List<String> clusteringSupportedKeys = getClusteringSupportedKeys(primaryKeys, event.getSchema(),
+                allowFlexibleColumnNaming);
         Clustering clustering = maxClusteringColumns <= 0 ? null :
           Clustering.newBuilder()
             .setFields(clusteringSupportedKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
             .build();
         TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
-          .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema(), tableId)))
+          .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema(), tableId),
+                  allowFlexibleColumnNaming))
           .setClustering(clustering)
           .build();
         TableInfo.Builder builder = TableInfo.newBuilder(tableId, tableDefinition);
@@ -472,9 +481,11 @@ public class BigQueryEventConsumer implements EventConsumer {
         } else {
           bigQuery.update(tableInfo);
         }
-        normalizedPrimaryKeys = primaryKeys.stream()
-          .map(BigQueryUtils::normalizeFieldName)
-          .collect(Collectors.toList());
+        normalizedPrimaryKeys = new ArrayList<>();
+        for (String primaryKey : primaryKeys) {
+          String normalizedKey = BigQueryUtils.normalizeFieldName(primaryKey, allowFlexibleColumnNaming);
+          normalizedPrimaryKeys.add(normalizedKey);
+        }
         updatePrimaryKeys(tableId, normalizedPrimaryKeys);
         break;
       case RENAME_TABLE:
@@ -498,7 +509,8 @@ public class BigQueryEventConsumer implements EventConsumer {
               .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
               .build();
           tableDefinition = StandardTableDefinition.newBuilder()
-            .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema(), tableId)))
+            .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema(), tableId),
+                    allowFlexibleColumnNaming))
             .setClustering(clustering)
             .build();
         }
@@ -514,11 +526,12 @@ public class BigQueryEventConsumer implements EventConsumer {
   }
 
   @VisibleForTesting
-  static List<String> getClusteringSupportedKeys(List<String> primaryKeys, Schema recordSchema) {
+  static List<String> getClusteringSupportedKeys(List<String> primaryKeys, Schema recordSchema,
+                                                 boolean allowFlexibleColumnNaming) {
     List<String> result = new ArrayList<>();
     for (String key : primaryKeys) {
-      if (Schemas.isClusteringSupported(recordSchema.getField(key))) {
-        result.add(BigQueryUtils.normalizeFieldName(key));
+      if (Schemas.isClusteringSupported(recordSchema.getField(key), allowFlexibleColumnNaming)) {
+        result.add(BigQueryUtils.normalizeFieldName(key, allowFlexibleColumnNaming));
       }
     }
     return result;
@@ -605,7 +618,7 @@ public class BigQueryEventConsumer implements EventConsumer {
     String normalizedDatabaseName = BigQueryUtils.getNormalizedDatasetName(datasetName,
        event.getOperation().getDatabaseName());
     String normalizedTableName = BigQueryUtils.normalizeTableName(event.getOperation().getTableName());
-    DMLEvent normalizedDMLEvent = BigQueryUtils.normalize(event, schemaMappingCache)
+    DMLEvent normalizedDMLEvent = BigQueryUtils.normalize(event, schemaMappingCache, allowFlexibleColumnNaming)
       .setDatabaseName(normalizedDatabaseName)
       .setTableName(normalizedTableName)
       .build();
@@ -835,7 +848,7 @@ public class BigQueryEventConsumer implements EventConsumer {
       Schema schema = jobType.isForTargetTable() ? blob.getTargetSchema() : blob.getStagingSchema();
       TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
         .setLocation(bucket.getLocation())
-        .setSchema(Schemas.convert(schema))
+        .setSchema(Schemas.convert(schema, allowFlexibleColumnNaming))
         .setClustering(clustering)
         .build();
       TableInfo.Builder builder = TableInfo.newBuilder(tableId, tableDefinition);
@@ -857,7 +870,8 @@ public class BigQueryEventConsumer implements EventConsumer {
 
     // Explicitly set schema for load jobs
     com.google.cloud.bigquery.Schema bqSchema
-      = Schemas.convert(jobType.isForTargetTable()  ? blob.getTargetSchema() : blob.getStagingSchema());
+      = Schemas.convert(jobType.isForTargetTable()  ? blob.getTargetSchema() : blob.getStagingSchema(),
+            allowFlexibleColumnNaming);
     LoadJobConfiguration.Builder jobConfigBuilder = LoadJobConfiguration
       .newBuilder(tableId, uri)
       .setSchema(bqSchema)
@@ -1580,7 +1594,7 @@ public class BigQueryEventConsumer implements EventConsumer {
       Schema.Field sortKeyField = Schema.Field.of(Constants.SORT_KEYS, Schemas.getSortKeysSchema(sortKeys));
 
       List<Field> fieldList = new ArrayList<>(fields);
-      fieldList.add(Schemas.convertToBigQueryField(sortKeyField));
+      fieldList.add(Schemas.convertToBigQueryField(sortKeyField, allowFlexibleColumnNaming));
       // Update the table with the new schema
       com.google.cloud.bigquery.Schema updatedSchema = com.google.cloud.bigquery.Schema.of(fieldList);
       table.toBuilder().setDefinition(StandardTableDefinition.of(updatedSchema)).build().update();

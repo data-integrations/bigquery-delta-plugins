@@ -45,11 +45,13 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
   // tables already assessed so far, key is table name and value is schema name
   private final Map<String, String> tableToSchema;
   private final String datasetName;
+  private final boolean allowFlexibleColumnNaming;
 
-  BigQueryAssessor(String stagingTablePrefix, String datasetName) {
+  BigQueryAssessor(String stagingTablePrefix, String datasetName, boolean allowFlexibleColumnNaming) {
     this.stagingTablePrefix = stagingTablePrefix;
     this.tableToSchema  = new HashMap<>();
     this.datasetName = datasetName;
+    this.allowFlexibleColumnNaming = allowFlexibleColumnNaming;
   }
 
   @Override
@@ -58,7 +60,8 @@ public class BigQueryAssessor implements TableAssessor<StandardizedTableDetail> 
     for (Schema.Field field : tableDetail.getSchema().getFields()) {
       try {
         String bqType = toBigQueryType(field);
-        columnAssessments.add(ColumnAssessment.builder(BigQueryUtils.normalizeFieldName(field.getName()), bqType)
+        columnAssessments.add(ColumnAssessment.builder(BigQueryUtils.normalizeFieldName(field.getName(),
+                        allowFlexibleColumnNaming), bqType)
           .setSourceColumn(field.getName()).build());
         if (LOG.isDebugEnabled()) {
           LOG.debug("Converting schema {} to {}", field.getSchema().isNullable() ?
