@@ -82,6 +82,19 @@ name is same as source database name. A valid name should only contain letters, 
 maximum length can be 1024. Any invalid chars would be replaced with underscore in the final dataset name and
 any characters exceeds length limit will be truncated.
 
+**Allow Flexible Column Naming**:
+By default ony english letters, numbers and underscore are allowed in column names. If this option is enabled,
+international characters are also allowed in column names with some extra special characters, which follow the
+bigquery naming convention for flexible column names.
+Some special characters allowed in flexible column names are: 
+- An ampersand (&)
+- A percent sign (%)
+- A colon (:)
+- A lessthan sign (<)
+- A space ( )
+
+Read more about this option [here](https://cloud.google.com/bigquery/docs/schemas#flexible-column-names).
+
 **Encryption Key Name**: GCP Customer-managed encryption key (CMEK) used to encrypt the resources created by this target. 
 Encryption key name should be of the form "projects/<gcp-project-id>/locations/<key-location>/keyRings/<key-ring-name>/cryptoKeys/<key-name>".
 

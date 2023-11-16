@@ -143,7 +143,7 @@ public class BigQueryConsumerTest {
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_SECONDS, "_staging",
                                                                     false, null, 2L,
-                                                                    DATASET, false);
+                                                                    DATASET, false, false);
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
@@ -190,7 +190,7 @@ public class BigQueryConsumerTest {
                                                                     bigQuery, bucket, "project",
                                                                     LOAD_INTERVAL_SECONDS, "_staging",
                                                                     false, null, 2L,
-                                                                    EMPTY_DATASET_NAME, false);
+                                                                    EMPTY_DATASET_NAME, false, false);
     eventConsumer.start();
 
     generateDDL(eventConsumer, tables);
