@@ -401,15 +401,9 @@ public class BigQueryEventConsumer implements EventConsumer {
         updatePrimaryKeys(tableId, normalizedPrimaryKeys);
         // TODO: check schema of table if it exists already
         if (table == null) {
-          List<String> clusteringSupportedKeys = getClusteringSupportedKeys(primaryKeys, event.getSchema());
-          Clustering clustering = maxClusteringColumns <= 0 || clusteringSupportedKeys.isEmpty() ? null :
-            Clustering.newBuilder()
-              .setFields(clusteringSupportedKeys.subList(0, Math.min(maxClusteringColumns,
-                                                                     clusteringSupportedKeys.size())))
-              .build();
           TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
             .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema(), tableId)))
-            .setClustering(clustering)
+            .setClustering(getClustering(event.getSchema(), primaryKeys))
             .build();
 
           TableInfo.Builder builder = TableInfo.newBuilder(tableId, tableDefinition);
@@ -453,14 +447,9 @@ public class BigQueryEventConsumer implements EventConsumer {
         tableId = TableId.of(project, normalizedDatabaseName, normalizedTableName);
         table = bigQuery.getTable(tableId);
         primaryKeys = event.getPrimaryKey();
-        List<String> clusteringSupportedKeys = getClusteringSupportedKeys(primaryKeys, event.getSchema());
-        Clustering clustering = maxClusteringColumns <= 0 ? null :
-          Clustering.newBuilder()
-            .setFields(clusteringSupportedKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
-            .build();
         TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
           .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema(), tableId)))
-          .setClustering(clustering)
+          .setClustering(getClustering(event.getSchema(), primaryKeys))
           .build();
         TableInfo.Builder builder = TableInfo.newBuilder(tableId, tableDefinition);
         if (encryptionConfig != null) {
@@ -493,13 +482,9 @@ public class BigQueryEventConsumer implements EventConsumer {
           bigQuery.delete(tableId);
         } else {
           primaryKeys = event.getPrimaryKey();
-          clustering = maxClusteringColumns <= 0 ? null :
-            Clustering.newBuilder()
-              .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
-              .build();
           tableDefinition = StandardTableDefinition.newBuilder()
             .setSchema(Schemas.convert(addSupplementaryColumnsToTargetSchema(event.getSchema(), tableId)))
-            .setClustering(clustering)
+            .setClustering(getClustering(event.getSchema(), primaryKeys))
             .build();
         }
 
@@ -511,6 +496,17 @@ public class BigQueryEventConsumer implements EventConsumer {
         bigQuery.create(tableInfo);
         break;
     }
+  }
+
+  @Nullable
+  private Clustering getClustering(Schema recordSchema, List<String> primaryKeys) {
+    List<String> clusteringSupportedKeys = getClusteringSupportedKeys(primaryKeys, recordSchema);
+    Clustering clustering = maxClusteringColumns <= 0 || clusteringSupportedKeys.isEmpty() ? null :
+      Clustering.newBuilder()
+        .setFields(clusteringSupportedKeys.subList(0, Math.min(maxClusteringColumns,
+                                                               clusteringSupportedKeys.size())))
+        .build();
+    return clustering;
   }
 
   @VisibleForTesting
@@ -827,16 +823,13 @@ public class BigQueryEventConsumer implements EventConsumer {
     throws IOException, DeltaFailureException {
     Table table = bigQuery.getTable(tableId);
     if (table == null) {
-      List<String> primaryKeys = getPrimaryKeys(TableId.of(project, blob.getDataset(), blob.getTable()));
-      Clustering clustering = maxClusteringColumns <= 0 ? null : Clustering.newBuilder()
-        .setFields(primaryKeys.subList(0, Math.min(maxClusteringColumns, primaryKeys.size())))
-        .build();
-
       Schema schema = jobType.isForTargetTable() ? blob.getTargetSchema() : blob.getStagingSchema();
+      List<String> primaryKeys = getPrimaryKeys(TableId.of(project, blob.getDataset(), blob.getTable()));
+
       TableDefinition tableDefinition = StandardTableDefinition.newBuilder()
         .setLocation(bucket.getLocation())
         .setSchema(Schemas.convert(schema))
-        .setClustering(clustering)
+        .setClustering(getClustering(schema, primaryKeys))
         .build();
       TableInfo.Builder builder = TableInfo.newBuilder(tableId, tableDefinition);
       if (encryptionConfig != null) {

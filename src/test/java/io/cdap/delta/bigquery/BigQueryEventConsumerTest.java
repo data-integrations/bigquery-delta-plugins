@@ -256,9 +256,10 @@ public class BigQueryEventConsumerTest {
 
       // Primary keys with all un-supported types for clustering
       List<String> primaryKeys = new ArrayList<>();
-      primaryKeys.add("id1");
+      String primaryKey1 = "id1";
+      primaryKeys.add(primaryKey1);
       Schema schema = Schema.recordOf(allinvalidsTableName,
-                                      Schema.Field.of("id1", Schema.of(Schema.Type.BYTES)));
+                                      Schema.Field.of(primaryKey1, Schema.of(Schema.Type.BYTES)));
 
       DDLEvent allInvalidsCreateTable = DDLEvent.builder()
         .setOperation(DDLOperation.Type.CREATE_TABLE)
@@ -273,19 +274,56 @@ public class BigQueryEventConsumerTest {
       Table table = bigQuery.getTable(allInvalidsTable);
       StandardTableDefinition tableDefinition = table.getDefinition();
       Clustering clustering = tableDefinition.getClustering();
+
       // No clustering should be added
       Assert.assertNull(clustering);
+
+      // test INSERT Operation
+      StructuredRecord record = StructuredRecord.builder(schema)
+        .set(primaryKey1, new byte[] {0, 1, 1, 0})
+        .build();
+
+      DMLEvent insertEvent = DMLEvent.builder()
+        .setOperationType(DMLOperation.Type.INSERT)
+        .setDatabaseName(dataset)
+        .setTableName(allinvalidsTableName)
+        .setRow(record)
+        .build();
+
+      eventConsumer.applyDML(new Sequenced<>(insertEvent, 1L));
+      eventConsumer.flush();
+
+      TableResult result = executeQuery(String.format("SELECT * from %s.%s", dataset, allinvalidsTableName));
+      Assert.assertEquals(1, result.getTotalRows());
+
+      DDLEvent allInvalidsTruncateTable = DDLEvent.builder()
+        .setOperation(DDLOperation.Type.TRUNCATE_TABLE)
+        .setDatabaseName(dataset)
+        .setTableName(allinvalidsTableName)
+        .setSchema(schema)
+        .setPrimaryKey(primaryKeys)
+        .setOffset(new Offset())
+        .build();
+      eventConsumer.applyDDL(new Sequenced<>(allInvalidsTruncateTable, 0));
+
+      table = bigQuery.getTable(allInvalidsTable);
+      tableDefinition = table.getDefinition();
+      clustering = tableDefinition.getClustering();
+
+      // No clustering should be added
+      Assert.assertNull(clustering);
+
       bigQuery.delete(allInvalidsTable);
 
       // Primary keys with some un-supported types for clustering
       primaryKeys = new ArrayList<>();
-      primaryKeys.add("id1");
+      primaryKeys.add(primaryKey1);
       primaryKeys.add("id2");
       primaryKeys.add("id3");
       primaryKeys.add("id4");
       primaryKeys.add("id5");
       schema = Schema.recordOf(allinvalidsTableName,
-                               Schema.Field.of("id1", Schema.of(Schema.Type.BYTES)),
+                               Schema.Field.of(primaryKey1, Schema.of(Schema.Type.BYTES)),
                                Schema.Field.of("id2", Schema.of(Schema.Type.BYTES)),
                                Schema.Field.of("id3", Schema.of(Schema.Type.BYTES)),
                                Schema.Field.of("id4", Schema.of(Schema.Type.BYTES)),
@@ -307,6 +345,29 @@ public class BigQueryEventConsumerTest {
       clustering = tableDefinition.getClustering();
       Assert.assertNotNull(clustering);
       Assert.assertEquals(primaryKeys.subList(4, 5), clustering.getFields());
+
+      // test INSERT Operation
+      record = StructuredRecord.builder(schema)
+        .set(primaryKey1, new byte[] {0, 1, 1, 0})
+        .set("id2", new byte[] {0, 1, 1, 0})
+        .set("id3", new byte[] {0, 1, 1, 0})
+        .set("id4", new byte[] {0, 1, 1, 0})
+        .set("id5", 100)
+        .build();
+
+      insertEvent = DMLEvent.builder()
+        .setOperationType(DMLOperation.Type.INSERT)
+        .setDatabaseName(dataset)
+        .setTableName(someInvalidsTableName)
+        .setRow(record)
+        .build();
+
+      eventConsumer.applyDML(new Sequenced<>(insertEvent, 1L));
+      eventConsumer.flush();
+
+      result = executeQuery(String.format("SELECT * from %s.%s", dataset, someInvalidsTableName));
+      Assert.assertEquals(1, result.getTotalRows());
+
       bigQuery.delete(someInvalidsTable);
     } finally {
       cleanupTest(bucket, dataset, eventConsumer);
