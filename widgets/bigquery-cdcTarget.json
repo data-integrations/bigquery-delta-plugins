@@ -47,6 +47,22 @@
           "widget-type": "textbox"
         },
         {
+          "name": "allowFlexibleColumnNaming",
+            "label": "Allow Flexible Column Naming",
+            "widget-type": "toggle",
+            "widget-attributes": {
+              "default": "false",
+              "on": {
+                "value": "true",
+                "label": "Yes"
+              },
+              "off": {
+                "value": "false",
+                "label": "No"
+              }
+            }
+        },
+        {
           "widget-type": "textbox",
           "label": "Encryption Key Name",
           "name": "encryptionKeyName",

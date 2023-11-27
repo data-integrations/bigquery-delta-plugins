@@ -211,7 +211,7 @@ public class BigQueryTarget implements DeltaTarget {
     return new BigQueryEventConsumer(context, storage, bigQuery, bucket, datasetProject,
                                      conf.getLoadIntervalSeconds(), conf.getStagingTablePrefix(),
                                      conf.requiresManualDrops(), encryptionConfig, null, conf.getDatasetName(),
-                                     conf.softDeletesEnabled());
+                                     conf.softDeletesEnabled(), conf.getAllowFlexibleColumnNaming());
   }
 
   @VisibleForTesting
@@ -228,7 +228,7 @@ public class BigQueryTarget implements DeltaTarget {
 
   @Override
   public TableAssessor<StandardizedTableDetail> createTableAssessor(Configurer configurer) {
-    return new BigQueryAssessor(conf.stagingTablePrefix, conf.datasetName);
+    return new BigQueryAssessor(conf.stagingTablePrefix, conf.datasetName, conf.getAllowFlexibleColumnNaming());
   }
 
   private static String stringifyPipelineId(DeltaPipelineId pipelineId) {
@@ -339,12 +339,28 @@ public class BigQueryTarget implements DeltaTarget {
 
     @Nullable
     @Description(
+      "By default, the target table's column names mirror those of the source table. They are normalized to include " +
+      "only letters, numbers, and underscores. Any invalid characters are replaced with underscores in the " +
+      "final column name. If set to true, the target table's column names will be adjusted to adhere to BigQuery's " +
+      "flexible column naming conventions, such as supporting international characters, spaces, and some more " +
+      "special characters (check docs) with a maximum length of 300 characters. Any invalid characters will " +
+      "be replaced with underscores in the final column name. Additionally, any characters exceeding the length " +
+      "limit will be truncated."
+    )
+    private Boolean allowFlexibleColumnNaming;
+
+    @Nullable
+    @Description(
       "Optional. GCP Customer-managed encryption key (CMEK) used to encrypt the resources created by this target.")
     private String encryptionKeyName;
 
     @Nullable
     public String getDatasetName() {
       return datasetName;
+    }
+
+    public boolean getAllowFlexibleColumnNaming() {
+       return allowFlexibleColumnNaming != null && allowFlexibleColumnNaming;
     }
 
     @Nullable
