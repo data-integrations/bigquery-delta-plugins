@@ -274,8 +274,8 @@ public class BigQueryTarget implements DeltaTarget {
 
     public static final String AUTO_DETECT = "auto-detect";
     @Nullable
-    @Description("Project of the BigQuery dataset. When running on a Google Cloud VM, this can be set to "
-      + "'auto-detect', which will use the project of the VM.")
+    @Description("Project of the BigQuery dataset. When running on a Dataproc cluster, this can be set to "
+      + "'auto-detect', which will use the project of the cluster.")
     private String project;
 
     @Macro
