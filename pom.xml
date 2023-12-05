@@ -60,7 +60,7 @@
     <delta.version>0.9.0-SNAPSHOT</delta.version>
     <failsafe.version>2.3.3</failsafe.version>
     <gcs.version>1.78.0</gcs.version>
-    <logback.version>1.2.3</logback.version>
+    <logback.version>1.2.13</logback.version>
     <powermock.version>2.0.9</powermock.version>
     <jacoco.version>0.8.8</jacoco.version>
     <!-- Need default value when coverage is not collected -->
