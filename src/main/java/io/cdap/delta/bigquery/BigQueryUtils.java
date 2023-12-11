@@ -54,7 +54,7 @@ import javax.annotation.Nullable;
  */
 public final class BigQueryUtils {
   private static final Logger LOG = LoggerFactory.getLogger(BigQueryUtils.class);
-  public static final int FIELD_NAME_MAX_LENGTH = 128;
+  public static final int FIELD_NAME_MAX_LENGTH = 300;
   static final String BACKTICK = "`";
   private static final int DATASET_OR_TABLE_NAME_MAX_LENGTH = 1024;
   // Valid BigQuery dataset names can contain only letters, numbers, and underscores.
@@ -67,6 +67,10 @@ public final class BigQueryUtils {
   private static final Pattern VALID_TABLE_NAME_REGEX = Pattern.compile("[\\p{L}\\p{M}\\p{N}\\p{Pc}\\p{Pd}\\p{Zs}]+");
   private static final Pattern INVALID_TABLE_NAME_REGEX =
           Pattern.compile("[^\\p{L}\\p{M}\\p{N}\\p{Pc}\\p{Pd}\\p{Zs}]+");
+  private static final Pattern VALID_FIELD_NAME_REGEX =
+          Pattern.compile("[\\p{L}\\p{M}\\p{N}\\p{Pc}\\p{Pd}&%+=:'<>#| ]+");
+  private static final Pattern INVALID_FIELD_NAME_REGEX =
+          Pattern.compile("[^\\p{L}\\p{M}\\p{N}\\p{Pc}\\p{Pd}&%+=:'<>#| ]+");
   private static final String BIG_QUERY_DUPLICATE_ERROR = "duplicate";
 
   private BigQueryUtils() {
@@ -201,7 +205,7 @@ public final class BigQueryUtils {
    * @return the normalized name
    */
   public static String normalizeDatasetName(String name) {
-    return normalize(name, DATASET_OR_TABLE_NAME_MAX_LENGTH, true, false);
+    return normalize(name, DATASET_OR_TABLE_NAME_MAX_LENGTH, true, false, false);
   }
 
   /**
@@ -213,30 +217,36 @@ public final class BigQueryUtils {
    * @return the normalized name
    */
   public static String normalizeTableName(String name) {
-    return normalize(name, DATASET_OR_TABLE_NAME_MAX_LENGTH, true, true);
+    return normalize(name, DATASET_OR_TABLE_NAME_MAX_LENGTH, true, true, false);
   }
 
   /**
    * Normalize the field name according to BigQuery's requirement.
    * The name must contain only letters, numbers, and underscores, start with a letter or underscore.
-   * And it must be 128 characters or fewer.
+   * See here: https://cloud.google.com/bigquery/docs/schemas#flexible-column-names
+   * And it must be 300 characters or fewer.
    * @param name the field name to be normalized
    * @return the normalized name
    */
-  public static String normalizeFieldName(String name) {
-    return normalize(name, FIELD_NAME_MAX_LENGTH, false, false);
+  public static String normalizeFieldName(String name, boolean allowFlexibleColumnNaming) {
+    // use extended charset is set false due to backward compatibility
+    // use allowFlexibleColumnNaming to determine whether to use extended charset
+    return normalize(name, FIELD_NAME_MAX_LENGTH, false, false, allowFlexibleColumnNaming);
   }
 
-  private static String normalize(String name, int maxLength, boolean canStartWithNumber, boolean useExtendedCharset) {
+  private static String normalize(String name, int maxLength, boolean canStartWithNumber, boolean useExtendedCharset,
+                                  boolean allowFlexibleColumnNames) {
     if (name == null || name.isEmpty()) {
       return name;
     }
-
     // replace invalid chars with underscores if there are any
-    if (useExtendedCharset && !VALID_TABLE_NAME_REGEX.matcher(name).matches()) {
+    if (allowFlexibleColumnNames && !VALID_FIELD_NAME_REGEX.matcher(name).matches()) {
+      name = INVALID_FIELD_NAME_REGEX.matcher(name).replaceAll("_");
+    }
+    if (useExtendedCharset && !VALID_TABLE_NAME_REGEX.matcher(name).matches() && !allowFlexibleColumnNames) {
       name = INVALID_TABLE_NAME_REGEX.matcher(name).replaceAll("_");
     }
-    if (!useExtendedCharset && !VALID_DATASET_NAME_REGEX.matcher(name).matches()) {
+    if (!useExtendedCharset && !VALID_DATASET_NAME_REGEX.matcher(name).matches() && !allowFlexibleColumnNames) {
       name = INVALID_DATASET_NAME_REGEX.matcher(name).replaceAll("_");
     }
 
@@ -257,25 +267,25 @@ public final class BigQueryUtils {
     return name;
   }
 
-  public static DMLEvent.Builder normalize(DMLEvent event) {
+  public static DMLEvent.Builder normalize(DMLEvent event, boolean allowFlexibleColumnNaming) {
 
     DMLEvent.Builder normalizedEventBuilder = DMLEvent.builder(event);
     if (event.getRow() != null) {
-      normalizedEventBuilder.setRow(normalize(event.getRow()));
+      normalizedEventBuilder.setRow(normalize(event.getRow(), allowFlexibleColumnNaming));
     }
     if (event.getPreviousRow() != null) {
-      normalizedEventBuilder.setPreviousRow(normalize(event.getPreviousRow()));
+      normalizedEventBuilder.setPreviousRow(normalize(event.getPreviousRow(), allowFlexibleColumnNaming));
     }
     return normalizedEventBuilder;
   }
 
-  private static StructuredRecord normalize(StructuredRecord record) {
+  private static StructuredRecord normalize(StructuredRecord record, boolean allowFlexibleColumnNaming) {
     Schema schema = record.getSchema();
     List<Schema.Field> fields = schema.getFields();
     List<Schema.Field> normalizedFields = new ArrayList<>(fields.size());
     Map<String, Object> valueMap = new HashMap<>();
     for (Schema.Field field : fields) {
-      String normalizedName = normalizeFieldName(field.getName());
+      String normalizedName = normalizeFieldName(field.getName(), allowFlexibleColumnNaming);
       normalizedFields.add(Schema.Field.of(normalizedName, field.getSchema()));
       valueMap.put(normalizedName, record.get(field.getName()));
     }

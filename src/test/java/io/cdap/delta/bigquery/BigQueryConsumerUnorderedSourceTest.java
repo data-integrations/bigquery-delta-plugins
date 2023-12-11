@@ -156,7 +156,7 @@ public class BigQueryConsumerUnorderedSourceTest {
     String dataset = "unordered_scenario_1";
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(context, storage, bigQuery, bucket,
             project, 1, STAGING_TABLE_PREFIX, false, null, null,
-            dataset, false);
+            dataset, false, false);
     List<String> tableNames = Arrays.asList("users1", "users2");
     try {
       long sequenceNum = createDatasetAndTable(eventConsumer, dataset, tableNames);
@@ -283,7 +283,7 @@ public class BigQueryConsumerUnorderedSourceTest {
   public void testConcurrentUpdateEventsWithoutSnapshot() throws Exception {
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(context, storage, bigQuery, bucket,
             project, 1, STAGING_TABLE_PREFIX, false, null, null,
-            null, false);
+            null, false, false);
     String dataset = "unordered_scenario_2";
     List<String> tableNames = Arrays.asList("users1", "users2");
     try {
@@ -397,7 +397,7 @@ public class BigQueryConsumerUnorderedSourceTest {
     String dataset = "unordered_scenario_3";
     BigQueryEventConsumer eventConsumer = new BigQueryEventConsumer(context, storage, bigQuery, bucket,
             project, 0, STAGING_TABLE_PREFIX, false, null, null,
-            dataset, false);
+            dataset, false, false);
     List<String> tableNames = Arrays.asList("users1", "users2");
     try {
       long sequenceNum = createDatasetAndTable(eventConsumer, dataset, tableNames);
