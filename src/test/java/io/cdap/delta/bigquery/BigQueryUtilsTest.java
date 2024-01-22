@@ -59,6 +59,7 @@ import java.util.List;
 import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
 
 /**
@@ -85,6 +86,7 @@ public class BigQueryUtilsTest {
       bigQueryMock = Mockito.mock(BigQuery.class);
       Table tableMock = Mockito.mock(Table.class);
       Dataset datasetMock = Mockito.mock(Dataset.class);
+      Mockito.when(bigQueryMock.getDataset(any(DatasetId.class))).thenReturn(datasetMock);
       Mockito.when(bigQueryMock.getTable(ArgumentMatchers.any())).thenReturn(tableMock);
       Mockito.when(bigQueryMock.getDataset("demodataset")).thenReturn(datasetMock);
       PowerMockito.spy(BigQueryUtils.class);
@@ -281,7 +283,7 @@ public class BigQueryUtilsTest {
 
       // Subtest : One Table
       Set<SourceTable> allTables = generateSourceTableSet(1);
-      Mockito.when(bigQueryMock.listTables(ArgumentMatchers.anyString())).thenReturn(generateBQTablesPage(1));
+      Mockito.when(bigQueryMock.listTables(any(DatasetId.class))).thenReturn(generateBQTablesPage(1));
       long tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, PROJECT,
                                                                         null, bigQueryMock, null, 1000);
       assertEquals(1L, tableResult);
@@ -316,7 +318,7 @@ public class BigQueryUtilsTest {
 
       //Subtest1 :  1001 Tables : Should call bigquery 2 times. 1000+1
       Set<SourceTable> allTables = generateSourceTableSet(1001);
-      Mockito.when(bigQueryMock.listTables(ArgumentMatchers.anyString())).thenReturn(generateBQTablesPage(1001));
+      Mockito.when(bigQueryMock.listTables(any(DatasetId.class))).thenReturn(generateBQTablesPage(1001));
       long tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, PROJECT,
                                                                         null, bigQueryMock, null, 1000);
       assertEquals(2L, tableResult);
@@ -341,7 +343,7 @@ public class BigQueryUtilsTest {
 
       //Subtest1 :  2500 Tables : Should call bigquery 3 times. 1000+1000+500
       Set<SourceTable> allTables = generateSourceTableSet(2500);
-      Mockito.when(bigQueryMock.listTables(ArgumentMatchers.anyString())).thenReturn(generateBQTablesPage(2500));
+      Mockito.when(bigQueryMock.listTables(any(DatasetId.class))).thenReturn(generateBQTablesPage(2500));
       long tableResult = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, PROJECT,
                                                                         null, bigQueryMock, null, 1000);
       assertEquals(3L, tableResult);
@@ -354,7 +356,7 @@ public class BigQueryUtilsTest {
     @Test
     public void testGetMaximumExistingSequenceNumberEmptyDatasetName() throws Exception {
       Set<SourceTable> allTables = generateSourceTableSet(1);
-      Mockito.when(bigQueryMock.listTables(ArgumentMatchers.anyString())).thenReturn(generateBQTablesPage(1));
+      Mockito.when(bigQueryMock.listTables(any(DatasetId.class))).thenReturn(generateBQTablesPage(1));
       long tableResult0 = BigQueryUtils.getMaximumExistingSequenceNumber(allTables, PROJECT,
                                                                          "", bigQueryMock, null, 1000);
       assertEquals(1, tableResult0);
