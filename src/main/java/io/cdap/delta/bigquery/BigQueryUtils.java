@@ -19,6 +19,7 @@ package io.cdap.delta.bigquery;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryError;
 import com.google.cloud.bigquery.BigQueryException;
+import com.google.cloud.bigquery.DatasetId;
 import com.google.cloud.bigquery.EncryptionConfiguration;
 import com.google.cloud.bigquery.FieldValue;
 import com.google.cloud.bigquery.FieldValueList;
@@ -111,8 +112,9 @@ public final class BigQueryUtils {
     SourceTable table0 = allTables.stream().findFirst().get();
     Set<TableId> existingTableIDs = new HashSet<>();
     String dataset = getNormalizedDatasetName(datasetName, table0.getDatabase());
-    if (bigQuery.getDataset(dataset) != null) {
-      for (Table table : bigQuery.listTables(dataset).iterateAll()) {
+    DatasetId datasetId = DatasetId.of(project, dataset);
+    if (bigQuery.getDataset(datasetId) != null) {
+      for (Table table : bigQuery.listTables(datasetId).iterateAll()) {
         existingTableIDs.add(table.getTableId());
       }
     }
