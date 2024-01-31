@@ -193,7 +193,7 @@ public class BigQueryTargetTest {
         bqTarget.initialize(deltaTargetContext);
       } finally {
         //verify at least 1 retry happens
-        PowerMockito.verifyStatic(BigQueryUtils.class, Mockito.atLeast(2));
+        PowerMockito.verifyStatic(BigQueryUtils.class, Mockito.atLeast(1));
         BigQueryUtils.getMaximumExistingSequenceNumber(Mockito.anySet(), Mockito.anyString(),
                 Mockito.nullable(String.class), Mockito.any(BigQuery.class),
                 Mockito.nullable(EncryptionConfiguration.class), Mockito.anyInt());

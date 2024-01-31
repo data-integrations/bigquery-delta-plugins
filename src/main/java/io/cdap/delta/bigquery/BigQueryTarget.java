@@ -109,7 +109,7 @@ public class BigQueryTarget implements DeltaTarget {
 
     Credentials credentials = conf.getCredentials();
 
-    String project = conf.getDatasetProject();
+    String project = conf.getProject();
 
     String cmekKey = context.getRuntimeArguments().get(GCP_CMEK_KEY_NAME) != null ?
       context.getRuntimeArguments().get(GCP_CMEK_KEY_NAME) : conf.getEncryptionKeyName();
@@ -138,8 +138,8 @@ public class BigQueryTarget implements DeltaTarget {
             });
     try {
       long maximumExistingSequenceNumber = Failsafe.with(retryPolicy).get(() ->
-              BigQueryUtils.getMaximumExistingSequenceNumber(context.getAllTables(), project, conf.getDatasetName(),
-                      bigQuery, encryptionConfig, MAX_TABLES_PER_QUERY));
+              BigQueryUtils.getMaximumExistingSequenceNumber(context.getAllTables(), conf.getDatasetProject(),
+                conf.getDatasetName(), bigQuery, encryptionConfig, MAX_TABLES_PER_QUERY));
       LOG.info("Found maximum sequence number {}", maximumExistingSequenceNumber);
       context.initializeSequenceNumber(maximumExistingSequenceNumber);
     } catch (Exception e) {
@@ -147,8 +147,6 @@ public class BigQueryTarget implements DeltaTarget {
               "selected for replication. Please make sure that if target tables exists, " +
               "they should have '_sequence_num' column in them.", e);
     }
-
-
   }
 
   @Override
