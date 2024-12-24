@@ -228,8 +228,8 @@ public class BigQueryEventConsumer implements EventConsumer {
     this.schemaMappingCache = new SchemaMappingCache();
     this.commitRetryPolicy = new RetryPolicy<>()
       .withMaxAttempts(Integer.MAX_VALUE)
-      .withMaxDuration(Duration.of(5, ChronoUnit.MINUTES))
-      .withBackoff(1, 60, ChronoUnit.SECONDS)
+      .withMaxDuration(Duration.of(45, ChronoUnit.MINUTES))
+      .withBackoff(1, 180, ChronoUnit.SECONDS)
       .onFailedAttempt(failureContext -> {
         // log on the first failure and then every fifth failed attempt
         if (failureContext.getAttemptCount() == 1 || failureContext.getAttemptCount() % 5 == 0) {
