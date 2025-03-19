@@ -1190,34 +1190,34 @@ public class BigQueryEventConsumer implements EventConsumer {
      *    This makes sure event in B happens later than event in A
      */
     if (sourceRowIdSupported) {
-      joinCondition = "A._row_id = B._row_id ";
-      whereClause = " B._row_id IS NULL ";
+      joinCondition = "__cdap_A__._row_id = __cdap_B__._row_id ";
+      whereClause = " __cdap_B__._row_id IS NULL ";
     } else {
       joinCondition = primaryKeys.stream()
-        .map(name -> String.format("A.`%s` = B.`_before_%s`", name, name))
+        .map(name -> String.format("__cdap_A__.`%s` = __cdap_B__.`_before_%s`", name, name))
         .collect(Collectors.joining(" AND "));
 
       whereClause = primaryKeys.stream()
-        .map(name -> String.format("B.`_before_%s` IS NULL", name))
+        .map(name -> String.format("__cdap_B__.`_before_%s` IS NULL", name))
         .collect(Collectors.joining(" AND "));
     }
 
     if (sourceEventsOrdering == SourceProperties.Ordering.ORDERED) {
-      joinCondition += String.format(" AND A.%s < B.%1$s\n", Constants.SEQUENCE_NUM);
+      joinCondition += String.format(" AND __cdap_A__.%s < __cdap_B__.%1$s\n", Constants.SEQUENCE_NUM);
 
     } else {
-      joinCondition += getOrderingCondition(sortKeys, "A", "B");
+      joinCondition += getOrderingCondition(sortKeys, "__cdap_A__", "__cdap_B__");
     }
-    return "SELECT A.* FROM\n" +
+    return "SELECT __cdap_A__.* FROM\n" +
       "(SELECT * FROM " +
          BigQueryUtils.wrapInBackTick(stagingTable.getProject(), stagingTable.getDataset(), stagingTable.getTable()) +
       " WHERE _batch_id = " + batchId +
-      " AND _sequence_num > " + latestSequenceNumInTargetTable + ") as A\n" +
+      " AND _sequence_num > " + latestSequenceNumInTargetTable + ") as __cdap_A__\n" +
       "LEFT OUTER JOIN\n" +
       "(SELECT * FROM " +
          BigQueryUtils.wrapInBackTick(stagingTable.getProject(), stagingTable.getDataset(), stagingTable.getTable()) +
       " WHERE _batch_id = " + batchId +
-      " AND _sequence_num > " + latestSequenceNumInTargetTable + ") as B\n" +
+      " AND _sequence_num > " + latestSequenceNumInTargetTable + ") as __cdap_B__\n" +
       "ON " + joinCondition +
       " WHERE " + whereClause;
   }
@@ -1277,12 +1277,12 @@ public class BigQueryEventConsumer implements EventConsumer {
 
     if (sourceRowIdSupported) {
       // if source supports row Id , we use row id to match the row
-      mergeCondition = " T._row_id = D._row_id ";
+      mergeCondition = " __cdap_T__._row_id = __cdap_D__._row_id ";
 
     } else {
       // if source doesn't support row Id, we use primary keys to match the row
       mergeCondition = primaryKeys.stream()
-        .map(name -> String.format("T.`%s` = D.`_before_%s`", name, name))
+        .map(name -> String.format("__cdap_T__.`%s` = __cdap_D__.`_before_%s`", name, name))
         .collect(Collectors.joining(" AND "));
 
     }
@@ -1332,37 +1332,37 @@ public class BigQueryEventConsumer implements EventConsumer {
       deleteOperation = "  UPDATE SET " + targetSchema.getFields().stream()
         .filter(predicate)
         .map(Schema.Field::getName)
-        .map(name -> String.format("`%s` = D.`%s`", name, name))
+        .map(name -> String.format("`%s` = __cdap_D__.`%s`", name, name))
         .collect(Collectors.joining(", ")) + ", " + Constants.IS_DELETED + " = true ";
       // if events are unordered , sort keys can decide the ordering
       // if an event happening earlier comes later , it's possible that some events happening later against the same
       // row has already been merged, so this late coming event should be ignored.
-      updateAndDeleteCondition = getOrderingCondition(sortKeys, "T", "D");
+      updateAndDeleteCondition = getOrderingCondition(sortKeys, "__cdap_T__", "__cdap_D__");
     }
 
     String mergeQuery = "MERGE " +
       BigQueryUtils.wrapInBackTick(targetTableId.getProject(), targetTableId.getDataset(), targetTableId.getTable()) +
-      " as T\n" +
-      "USING (" + diffQuery + ") as D\n" +
+      " as __cdap_T__\n" +
+      "USING (" + diffQuery + ") as __cdap_D__\n" +
       "ON " + mergeCondition + "\n" +
-      "WHEN MATCHED AND D._op = \"DELETE\" " + updateAndDeleteCondition + "THEN\n" +
+      "WHEN MATCHED AND __cdap_D__._op = \"DELETE\" " + updateAndDeleteCondition + "THEN\n" +
       deleteOperation + "\n" +
       // In a case when a replicator is paused for too long and crashed when resumed
       // user will create a new replicator against the same target
       // in this case the target already has some data
       // so the new repliator's snapshot will generate insert events that match some existing data in the
       // targe. That's why in the match case, we still need the insert opertion.
-      "WHEN MATCHED AND D._op IN (\"INSERT\", \"UPDATE\") " + updateAndDeleteCondition + "THEN\n" +
+      "WHEN MATCHED AND __cdap_D__._op IN (\"INSERT\", \"UPDATE\") " + updateAndDeleteCondition + "THEN\n" +
       "  UPDATE SET " +
       targetSchema.getFields().stream()
         .filter(predicate)
         .map(Schema.Field::getName)
-        .map(name -> String.format("`%s` = D.`%s`", name, name))
+        .map(name -> String.format("`%s` = __cdap_D__.`%s`", name, name))
         // explicitly set "_is_deleted" to null for the case when this row was previously deleted and the
         // "_is_deleted" column was set to "true" and now a new insert is to insert the same row , we need to
         // reset "_is_deleted" back to null.
         .collect(Collectors.joining(", ")) + ", " + Constants.IS_DELETED + " = null\n" +
-      "WHEN NOT MATCHED AND D._op IN (\"INSERT\", \"UPDATE\") THEN\n" +
+      "WHEN NOT MATCHED AND __cdap_D__._op IN (\"INSERT\", \"UPDATE\") THEN\n" +
       "  INSERT (" +
       targetSchema.getFields().stream()
         .filter(predicate)
@@ -1375,7 +1375,7 @@ public class BigQueryEventConsumer implements EventConsumer {
         .collect(Collectors.joining(", ")) + ")";
 
     if (sourceEventOrdering == SourceProperties.Ordering.UN_ORDERED) {
-      mergeQuery += "\nWHEN NOT MATCHED AND D._op = \"DELETE\" THEN\n" +
+      mergeQuery += "\nWHEN NOT MATCHED AND __cdap_D__._op = \"DELETE\" THEN\n" +
         "  INSERT (" +
         targetSchema.getFields().stream()
           .filter(predicate)
