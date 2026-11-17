@@ -59,6 +59,10 @@
     <cdap.version>6.4.0</cdap.version>
     <delta.version>0.9.0</delta.version>
     <failsafe.version>2.3.3</failsafe.version>
+    <jackson.version>2.18.12</jackson.version>
+    <protobuf.version>3.25.5</protobuf.version>
+    <google-oauth-client.version>1.33.3</google-oauth-client.version>
+    <google-http-client.version>1.41.7</google-http-client.version>
     <gcs.version>1.78.0</gcs.version>
     <logback.version>1.2.3</logback.version>
     <powermock.version>2.0.9</powermock.version>
@@ -82,6 +86,34 @@
 
   <dependencyManagement>
     <dependencies>
+      <!-- Floors over the older versions that google-cloud-bigquery / -storage and avro bring in. -->
+      <dependency>
+        <groupId>com.fasterxml.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>${jackson.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>com.google.protobuf</groupId>
+        <artifactId>protobuf-bom</artifactId>
+        <version>${protobuf.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <!-- google-oauth-client 1.33.3 is built against google-http-client 1.41.7; keep them in step. -->
+      <dependency>
+        <groupId>com.google.http-client</groupId>
+        <artifactId>google-http-client-bom</artifactId>
+        <version>${google-http-client.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>com.google.oauth-client</groupId>
+        <artifactId>google-oauth-client</artifactId>
+        <version>${google-oauth-client.version}</version>
+      </dependency>
       <!-- commons-compress 1.26.2 (from avro 1.11.4) pulls commons-lang3 3.14.0; use the fixed 3.18.0. -->
       <dependency>
         <groupId>org.apache.commons</groupId>
