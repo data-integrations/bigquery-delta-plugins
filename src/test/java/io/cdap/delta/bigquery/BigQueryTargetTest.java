@@ -46,6 +46,7 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.powermock.api.mockito.PowerMockito;
+import org.powermock.core.classloader.annotations.PowerMockIgnore;
 import org.powermock.core.classloader.annotations.PrepareForTest;
 import org.powermock.modules.junit4.PowerMockRunner;
 
@@ -69,6 +70,10 @@ import static io.cdap.delta.bigquery.BigQueryTarget.STAGING_BUCKET_PREFIX;
  */
 @PrepareForTest({BigQueryUtils.class, BigQueryTarget.class, StorageOptions.class,
         BucketInfo.class, BigQueryOptions.class})
+@PowerMockIgnore({
+  "javax.management.*", "javax.xml.*", "org.xml.*", "org.w3c.*",
+  "com.sun.org.apache.xerces.*", "jdk.internal.reflect.*"
+})
 @RunWith(PowerMockRunner.class)
 public class BigQueryTargetTest {
   private static final String GCP_CMEK_KEY_NAME = "gcp.cmek.key.name";
