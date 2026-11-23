@@ -62,6 +62,7 @@ import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 import org.powermock.api.mockito.PowerMockito;
+import org.powermock.core.classloader.annotations.PowerMockIgnore;
 import org.powermock.core.classloader.annotations.PrepareForTest;
 import org.powermock.modules.junit4.PowerMockRunner;
 import org.slf4j.Logger;
@@ -84,6 +85,10 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 @PrepareForTest({AvroEventWriter.class})
+@PowerMockIgnore({
+  "javax.management.*", "javax.xml.*", "org.xml.*", "org.w3c.*",
+  "com.sun.org.apache.xerces.*", "jdk.internal.reflect.*"
+})
 @RunWith(PowerMockRunner.class)
 public class BigQueryConsumerTest {
   private static final Gson GSON = new Gson();
