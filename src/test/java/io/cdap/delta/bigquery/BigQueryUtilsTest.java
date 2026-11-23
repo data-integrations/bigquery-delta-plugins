@@ -45,6 +45,7 @@ import org.junit.runner.RunWith;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mockito;
 import org.powermock.api.mockito.PowerMockito;
+import org.powermock.core.classloader.annotations.PowerMockIgnore;
 import org.powermock.core.classloader.annotations.PrepareForTest;
 import org.powermock.modules.junit4.PowerMockRunner;
 
@@ -76,6 +77,10 @@ public class BigQueryUtilsTest {
   private static final String PROJECT = "testproject";
 
   @PrepareForTest(BigQueryUtils.class)
+  @PowerMockIgnore({
+    "javax.management.*", "javax.xml.*", "org.xml.*", "org.w3c.*",
+    "com.sun.org.apache.xerces.*", "jdk.internal.reflect.*"
+  })
   @RunWith(PowerMockRunner.class)
   public static class LocalIndependentTests {
     private BigQuery bigQueryMock;
